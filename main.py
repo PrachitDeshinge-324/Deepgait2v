@@ -42,6 +42,27 @@ def main():
         print("Error: Could not open video file")
         return
     
+    # Initialize video writer if saving video
+    video_writer = None
+    if config.SAVE_VIDEO:
+        # Get video properties
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(os.path.dirname(config.OUTPUT_VIDEO_PATH), exist_ok=True)
+        
+        # Initialize video writer
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_writer = cv2.VideoWriter(config.OUTPUT_VIDEO_PATH, fourcc, fps, (frame_width, frame_height))
+        print(f"Saving output video to: {config.OUTPUT_VIDEO_PATH}")
+    
+    # Create frames directory if saving individual frames
+    if config.SAVE_FRAMES:
+        os.makedirs(config.OUTPUT_FRAMES_DIR, exist_ok=True)
+        print(f"Saving frames to: {config.OUTPUT_FRAMES_DIR}")
+    
     # Variables for FPS calculation
     prev_time = 0
     curr_time = 0
@@ -316,11 +337,20 @@ def main():
             cv2.putText(vis_frame, stats_text, (10, 60), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         
-        # Display frame
-        cv2.imshow('Gait Recognition with Quality Control', vis_frame)
+        # Display and/or save frame
+        if config.SAVE_VIDEO and video_writer is not None:
+            video_writer.write(vis_frame)
+        
+        if config.SAVE_FRAMES:
+            frame_filename = f"{config.OUTPUT_FRAMES_DIR}/frame_{frame_count:04d}.jpg"
+            cv2.imwrite(frame_filename, vis_frame)
+        
+        # Display frame if enabled
+        if config.SHOW_DISPLAY:
+            cv2.imshow('Gait Recognition with Quality Control', vis_frame)
         
         # Handle keyboard input
-        key = cv2.waitKey(1) & 0xFF
+        key = cv2.waitKey(1) & 0xFF if config.SHOW_DISPLAY else -1
         if key == ord('q'):
             break
         elif key == ord('s'):
@@ -353,6 +383,9 @@ def main():
     
     # Cleanup
     cap.release()
+    if video_writer is not None:
+        video_writer.release()
+        print(f"Output video saved to: {config.OUTPUT_VIDEO_PATH}")
     cv2.destroyAllWindows()
     
     # Final statistics and cleanup

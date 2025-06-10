@@ -3,11 +3,19 @@ Configuration settings for the tracking application
 """
 
 # Paths
-MODEL_PATH = '../Person_New/weights/yolo11m.pt'
+MODEL_PATH = 'weights/yolo11m.pt'
 SEG_MODEL_PATH = 'weights/yolo11m-seg.pt'
-VIDEO_PATH = '../Person_New/input/3c1.mp4'
+GAIT_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"  # Update this path
+VIDEO_PATH = 'input/3c1.mp4'
 SIMILARITY_THRESHOLD = 0.3
 MAX_FRAMES = 1000
+
+# Output settings
+SAVE_VIDEO = True  # Whether to save output video
+OUTPUT_VIDEO_PATH = 'output/gait_recognition_output.mp4'  # Output video path
+SAVE_FRAMES = False  # Whether to save individual frames
+OUTPUT_FRAMES_DIR = 'output/frames'  # Directory for individual frames
+SHOW_DISPLAY = False  # Whether to show live video display
 
 # Tracker settings
 TRACKER_CONFIG = {
@@ -50,8 +58,6 @@ GAIT_RECOGNIZER_CONFIG = {
     },
     'use_emb2': False
 }
-
-GAIT_MODEL_PATH = "../Person_Temp/DeepGaitV2_30_DA-50000.pt"  # Update this path
 
 # Quality Assessment Configuration
 QUALITY_ASSESSOR_CONFIG = {

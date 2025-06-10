@@ -1,2 +1,9 @@
 weights/*
 *.db
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.cache/
+.cache/*
+*.cache
