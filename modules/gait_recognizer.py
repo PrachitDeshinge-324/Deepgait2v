@@ -116,9 +116,12 @@ class GaitRecognizer:
             cfg (dict): Configuration for the model
         """
         # Force CPU for 3D operations
-        self.device = torch.device("cpu")
-        print(f"Using CPU for model inference (3D convolutions not supported on MPS)")
-        
+        device = get_best_device()
+        if device == 'mps':
+            self.device = torch.device("cpu")
+            print(f"Using CPU for model inference (3D convolutions not supported on MPS)")
+        else:
+            self.device = torch.device(device)
         # Check if we can switch to 2D mode instead of p3d
         if 'Backbone' in cfg and 'mode' in cfg['Backbone'] and cfg['Backbone']['mode'] == 'p3d':
             print("Detected p3d mode which uses 3D convolutions. Trying to switch to 2d mode...")

@@ -9,13 +9,81 @@ import os
 import numpy as np
 import pickle
 import sqlite3
+import hashlib
+import colorsys
+from datetime import datetime
 from modules.detector import PersonDetector
 from modules.tracker import PersonTracker
 from modules.visualizer import Visualizer
 from modules.silhouette_extractor import SilhouetteExtractor
 from modules.gait_recognizer import GaitRecognizer
 from modules.quality_assessor import GaitSequenceQualityAssessor
-from modules.person_database import PersonEmbeddingDatabase
+from utils.database import PersonEmbeddingDatabase  # Import the database class
+
+def get_color_for_id(id_value, saturation=0.8, brightness=0.9):
+    """
+    Generate a consistent color based on an ID value.
+    Returns a tuple of (B, G, R) values for OpenCV.
+    """
+    # Use the hash of the string representation of the ID
+    hash_object = hashlib.md5(str(id_value).encode())
+    hash_hex = hash_object.hexdigest()
+    
+    # Convert part of the hash to an integer
+    hash_int = int(hash_hex[:8], 16)
+    
+    # Use the hash to generate a hue value (0-360)
+    hue = hash_int % 360
+    
+    # Convert HSV to RGB
+    r, g, b = colorsys.hsv_to_rgb(hue/360, saturation, brightness)
+    
+    # Scale to 0-255 range for OpenCV
+    return (int(b*255), int(g*255), int(r*255))
+
+def enforce_unique_person_assignments(track_identities, active_track_ids, current_track_id, potential_match):
+    """
+    Ensures that each track gets assigned to a unique person ID by
+    checking if the potential match is already assigned to another active track.
+    
+    Returns:
+        bool: True if this person_id is available, False if already used by another track
+    """
+    person_id = potential_match[0]
+    
+    # Check if this person ID is already assigned to another track
+    for track_id, identity in track_identities.items():
+        if (track_id != current_track_id and 
+            track_id in active_track_ids and 
+            identity['person_id'] == person_id):
+            # This person is already assigned to another active track
+            print(f"Conflict: Person {person_id} already assigned to track {track_id}")
+            return False
+            
+    # This person ID is not used by other tracks
+    return True
+
+def should_update_embedding(current_quality, stored_quality, similarity):
+    """
+    Determine if we should update the stored embedding based on quality and similarity.
+    
+    Args:
+        current_quality: Quality score of current embedding
+        stored_quality: Quality score of stored embedding
+        similarity: Similarity between current and stored embedding
+        
+    Returns:
+        bool: True if we should update, False otherwise
+    """
+    # Update if quality is significantly better
+    if current_quality > stored_quality * 1.1:  # 10% better
+        return True
+    
+    # Update if quality is better and similarity is high (same person, better view)
+    if current_quality > stored_quality and similarity > 0.8:
+        return True
+        
+    return False
 
 def main():
     """Main function to run the tracking and recognition application with quality control"""
@@ -26,15 +94,44 @@ def main():
     visualizer = Visualizer(config.VISUALIZATION_CONFIG)
     silhouette_extractor = SilhouetteExtractor(config.SILHOUETTE_CONFIG, config.SEG_MODEL_PATH)
     gait_recognizer = GaitRecognizer(config.GAIT_MODEL_PATH, config.GAIT_RECOGNIZER_CONFIG)
-    
-    # Initialize quality assessor and database
     quality_assessor = GaitSequenceQualityAssessor(config.QUALITY_ASSESSOR_CONFIG)
-    person_db = PersonEmbeddingDatabase("person_embeddings.db", config.PERSON_DATABASE_CONFIG)
     
-    print("=== Gait Recognition System with Quality Control ===")
-    db_stats = person_db.get_person_statistics()
-    print(f"Database contains {db_stats.get('total_persons', 0)} persons with {db_stats.get('total_active_embeddings', 0)} embeddings")
-    print(f"Average quality: {db_stats.get('average_quality', 0.0):.3f}")
+    # Initialize person database
+    embedding_dimension = 256*16  # Adjust based on your actual embedding size
+    person_db = PersonEmbeddingDatabase(dimension=embedding_dimension)
+    
+    # Load existing database if available
+    db_path = os.path.join(config.DATA_DIR, "person_database")
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    
+    if os.path.exists(db_path + ".index"):
+        print(f"Loading database from {db_path}.index")
+        try:
+            person_db.load_from_disk(db_path)
+            # Print detailed information to confirm loading worked
+            print(f"Database loaded with {len(person_db.people)} persons")
+            if hasattr(person_db, 'index') and hasattr(person_db.index, 'ntotal'):
+                print(f"FAISS index size: {person_db.index.ntotal}")
+            
+            # Test the database with a random embedding to verify search works
+            if hasattr(person_db, 'index') and person_db.index.ntotal > 0:
+                print("Testing database search functionality...")
+                test_emb = np.random.rand(1, embedding_dimension).astype(np.float32)
+                test_results = person_db.identify_person(test_emb, top_k=3, threshold=0.1)
+                print(f"Test search returned {len(test_results)} results")
+            # Print a few entries to verify content
+            print("Database contents:")
+            for i, (pid, info) in enumerate(person_db.people.items()):
+                if i < 3:  # Print first 3 entries for verification
+                    print(f"  Person: {pid}, Name: {info['name']}, Quality: {info['quality']}")
+                else:
+                    break
+        except Exception as e:
+            print(f"ERROR: Database loading failed: {e}")
+            print("Creating a new database instead.")
+            person_db = PersonEmbeddingDatabase(dimension=embedding_dimension)
+    else:
+        print(f"No existing database found at {db_path}.index. Creating a new one.")
     
     # Open video capture
     cap = cv2.VideoCapture(config.VIDEO_PATH)
@@ -70,7 +167,7 @@ def main():
     
     # Dictionary to store silhouettes for each track
     track_silhouettes = {}
-    
+    track_embeddings = {}
     # Dictionary to store quality assessments
     track_quality_history = {}
     
@@ -110,6 +207,9 @@ def main():
         # Track persons
         tracks = tracker.update(detections)
         
+        # Get active track IDs
+        active_track_ids = {t.track_id for t in tracks}
+        
         # Extract silhouettes for active tracks
         silhouette_sequences = silhouette_extractor.extract_silhouettes(frame, tracks)
         
@@ -148,149 +248,115 @@ def main():
                         
                         # Generate embedding for recognition
                         embedding = gait_recognizer.recognize(track_silhouettes[track_id])
-                        
+
+                        # Person identification logic
                         if embedding is not None:
                             print(f"Generated embedding for track {track_id} - Shape: {embedding.shape}")
+                            track_embeddings[track_id] = embedding
                             
-                            # Check for temporal/spatial conflicts with existing assignments
-                            should_force_new_person = False
-                            current_track_box = None
+                            # Get current quality assessment
+                            current_quality = quality_result['overall_score']
                             
-                            # Get current track's bounding box for spatial analysis
-                            for track in tracks:
-                                if track.track_id == track_id:
-                                    current_track_box = track.tlbr
-                                    break
-                            
-                            # Check for simultaneous active tracks with different person assignments
-                            active_track_ids = {track.track_id for track in tracks}
-                            conflicting_assignments = []
-                            
-                            for other_track_id in active_track_ids:
-                                if (other_track_id != track_id and 
-                                    other_track_id in track_identities):
-                                    
-                                    # Check for temporal overlap
-                                    temporal_conflict = False
-                                    if (track_id in track_timings and other_track_id in track_timings):
-                                        track1_start = track_timings[track_id]['first_seen']
-                                        track1_end = track_timings[track_id]['last_seen']
-                                        track2_start = track_timings[other_track_id]['first_seen']
-                                        track2_end = track_timings[other_track_id]['last_seen']
-                                        
-                                        # Check if tracks have significant temporal overlap
-                                        overlap_frames = max(0, min(track1_end, track2_end) - max(track1_start, track2_start))
-                                        min_overlap_threshold = 10  # frames
-                                        
-                                        if overlap_frames > min_overlap_threshold:
-                                            temporal_conflict = True
-                                    
-                                    # Get spatial distance if possible
-                                    spatial_conflict = False
-                                    if current_track_box is not None:
-                                        for track in tracks:
-                                            if track.track_id == other_track_id:
-                                                other_box = track.tlbr
-                                                # Calculate box center distance
-                                                center1 = [(current_track_box[0] + current_track_box[2])/2, 
-                                                          (current_track_box[1] + current_track_box[3])/2]
-                                                center2 = [(other_box[0] + other_box[2])/2, 
-                                                          (other_box[1] + other_box[3])/2]
-                                                distance = ((center1[0] - center2[0])**2 + (center1[1] - center2[1])**2)**0.5
-                                                
-                                                # If tracks are far apart spatially, they're different people
-                                                min_spatial_distance = 100  # pixels
-                                                if distance > min_spatial_distance:
-                                                    spatial_conflict = True
-                                                break
-                                    
-                                    # If there's both temporal and spatial conflict, they're different people
-                                    if temporal_conflict and spatial_conflict:
-                                        conflicting_assignments.append(
-                                            (other_track_id, track_identities[other_track_id]['person_id'])
-                                        )
-                            
-                            # Try to find a match in the database
-                            match_result = person_db.find_best_match(
-                                embedding, 
-                                quality_result['overall_score']
-                            )
-                            
-                            # Check if the match conflicts with simultaneous tracks
-                            if match_result and conflicting_assignments:
-                                matched_person_id = match_result['person_id']
-                                for conf_track_id, conf_person_id in conflicting_assignments:
-                                    if matched_person_id == conf_person_id:
-                                        print(f"⚠ Track {track_id} would match {matched_person_id} but conflicts with "
-                                              f"simultaneous track {conf_track_id}. Forcing new person creation.")
-                                        should_force_new_person = True
-                                        break
-                            
-                            if match_result and not should_force_new_person:
-                                person_id = match_result['person_id']
-                                confidence = match_result['confidence']
-                                similarity = match_result['similarity']
+                            # First check if this track already has an identity
+                            if track_id in track_identities:
+                                # Track already identified, just update embedding if quality improved
+                                current_person_id = track_identities[track_id]['person_id']
+                                current_person_quality = track_identities[track_id]['quality']
                                 
-                                track_identities[track_id] = {
-                                    'person_id': person_id,
-                                    'confidence': confidence,
-                                    'similarity': similarity,
-                                    'quality': quality_result['overall_score']
-                                }
-                                
-                                print(f"✓ Track {track_id} matched to {person_id} "
-                                      f"(confidence: {confidence:.3f}, similarity: {similarity:.3f})")
-                                
+                                print(f"Track {track_id} already identified as {track_identities[track_id]['name']}")
+                                if current_quality > current_person_quality:
+                                    print(f"Updating existing identity {current_person_id} with higher quality embedding")
+                                    person_db.update_person(current_person_id, embedding=embedding, quality=current_quality)
+                                    track_identities[track_id]['quality'] = current_quality
                             else:
-                                # No match found OR forced new person due to conflicts
-                                if quality_result['is_high_quality'] or should_force_new_person:
-                                    total_persons = person_db.get_person_statistics().get('total_persons', 0)
-                                    new_person_id = f"Person_{total_persons + 1:03d}"
+                                # Debug track identification state
+                                print(f"Track {track_id} needs identity assignment")
+                                
+                                # New identification needed - search database
+                                match_threshold = config.IDENTIFICATION_THRESHOLD
+                                matches = person_db.identify_person(embedding, top_k=5, threshold=match_threshold)
+                                
+                                print(f"Track {track_id}: Found {len(matches)} potential matches")
+                                for i, match in enumerate(matches):
+                                    person_id, similarity, name, stored_quality = match
+                                    print(f"  Match {i+1}: {name} (ID: {person_id}), similarity: {similarity:.3f}, quality: {stored_quality:.3f}")
+                                print(f"Track {track_id} match threshold: {config.IDENTIFICATION_THRESHOLD}, best match similarity: {similarity if matches else 'N/A'}")
+                                
+                                # Get list of person IDs already assigned to OTHER active tracks
+                                assigned_person_ids = set()
+                                for other_id in active_track_ids:
+                                    if other_id != track_id and other_id in track_identities:
+                                        assigned_person_ids.add(track_identities[other_id]['person_id'])
+                                
+                                print(f"Person IDs already assigned to other tracks: {assigned_person_ids}")
+                                
+                                # Find matches that aren't already assigned
+                                available_matches = []
+                                for match in matches:
+                                    person_id = match[0]
+                                    if person_id not in assigned_person_ids:
+                                        available_matches.append(match)
+                                
+                                # DEBUG: Print available matches
+                                print(f"Available matches (not used by other tracks): {len(available_matches)}")
+                                
+                                # FIX: Check if we have available matches and use them
+                                if len(available_matches) > 0:
+                                    # Use best available match
+                                    person_id, similarity, name, stored_quality = available_matches[0]
                                     
-                                    success = person_db.add_person_embedding(
+                                    print(f">>> ASSIGNING Track {track_id} to existing database person {name} with similarity {similarity:.3f}")
+                                    
+                                    # Assign this identity to the track
+                                    track_identities[track_id] = {
+                                        'person_id': person_id,
+                                        'name': name,
+                                        'confidence': similarity,
+                                        'quality': current_quality,
+                                        'is_new': False  # Not new, from database
+                                    }
+                                    
+                                    print(f"SUCCESS: Track {track_id} identified as existing person {name}")
+                                    
+                                    # Update database if quality improved
+                                    if current_quality > stored_quality:
+                                        person_db.update_person(person_id, embedding=embedding, quality=current_quality)
+                                else:
+                                    # No available matches - create new person
+                                    print(f"No available matches for Track {track_id} - creating new person")
+                                    
+                                    # Generate unique ID with microsecond precision
+                                    timestamp = int(time.time() * 1000000)  # Microseconds
+                                    random_component = np.random.randint(0, 1000000)
+                                    new_person_id = f"P{timestamp}{random_component}"
+                                    
+                                    # Generate name
+                                    new_person_name = f"Person_{new_person_id[-6:]}"
+                                    
+                                    # Add to database
+                                    person_db.add_person(
                                         person_id=new_person_id,
+                                        name=new_person_name,
                                         embedding=embedding,
-                                        quality_result=quality_result,
-                                        sequence_length=len(track_silhouettes[track_id]),
-                                        source_info=f"video_frame_{frame_count}_track_{track_id}"
+                                        quality=current_quality,
+                                        metadata={'first_seen': datetime.now().isoformat()}
                                     )
                                     
-                                    if success:
-                                        track_identities[track_id] = {
-                                            'person_id': new_person_id,
-                                            'confidence': 1.0,  # New person, high confidence
-                                            'similarity': 1.0,
-                                            'quality': quality_result['overall_score'],
-                                            'is_new': True
-                                        }
-                                        
-                                        reason = "spatial conflict" if should_force_new_person else "no match found"
-                                        print(f"✓ Created new person {new_person_id} for track {track_id} "
-                                              f"(quality: {quality_result['overall_score']:.3f}, reason: {reason})")
+                                    # Assign to track
+                                    track_identities[track_id] = {
+                                        'person_id': new_person_id,
+                                        'name': new_person_name,
+                                        'confidence': 1.0,
+                                        'quality': current_quality,
+                                        'is_new': True  # New person
+                                    }
+                                    
+                                    if matches:
+                                        print(f"Track {track_id}: Created new person because all matches were already assigned to other tracks")
                                     else:
-                                        print(f"⚠ Failed to create new person for track {track_id}")
-                                else:
-                                    print(f"⚠ Track {track_id} quality too low for new person creation "
-                                          f"({quality_result['overall_score']:.3f})")
-                            
-                            # If we have a good match and high quality, add to existing person's database
-                            if (match_result and quality_result['is_high_quality'] and 
-                                match_result['confidence'] > 0.8):
-                                
-                                person_db.add_person_embedding(
-                                    person_id=match_result['person_id'],
-                                    embedding=embedding,
-                                    quality_result=quality_result,
-                                    sequence_length=len(track_silhouettes[track_id]),
-                                    source_info=f"video_frame_{frame_count}_track_{track_id}"
-                                )
-                                
-                                print(f"✓ Added high-quality embedding to {match_result['person_id']}")
+                                        print(f"Track {track_id}: Created new person because no matches found")
         
         # Clean up old tracks that are no longer active
-        active_track_ids = {track.track_id for track in tracks}
-        
-        # Remove data for inactive tracks (but keep recognized identities for display)
         for track_id in list(track_silhouettes.keys()):
             if track_id not in active_track_ids:
                 # Clean up silhouettes and quality history to save memory
@@ -303,39 +369,98 @@ def main():
         # Visualize results
         vis_frame = visualizer.draw_tracks(frame, tracks)
         
-        # Add recognition results to visualization
+        # Check for duplicate person IDs (for visualization)
+        person_id_counts = {}
+        for track_id in active_track_ids:
+            if track_id in track_identities:
+                person_id = track_identities[track_id]['person_id']
+                if person_id in person_id_counts:
+                    person_id_counts[person_id].append(track_id)
+                else:
+                    person_id_counts[person_id] = [track_id]
+        
+        # Find duplicate assignments
+        duplicate_person_ids = {pid: tracks for pid, tracks in person_id_counts.items() if len(tracks) > 1}
+        if duplicate_person_ids:
+            print(f"WARNING: Duplicate person assignments detected: {duplicate_person_ids}")
+        
+        # Draw bounding box and identity information
         for track in tracks:
-            if track.track_id in track_identities:
-                identity_info = track_identities[track.track_id]
+            track_id = track.track_id
+            x1, y1, x2, y2 = track.tlbr
+            
+            if track_id in track_identities:
+                identity_info = track_identities[track_id]
                 person_id = identity_info['person_id']
                 confidence = identity_info['confidence']
                 quality = identity_info['quality']
+                name = identity_info['name']
+                is_new = identity_info.get('is_new', False)
                 
-                # Draw identity information
-                x1, y1, x2, y2 = track.tlbr
-                label = f"{person_id} ({confidence:.2f})"
-                if identity_info.get('is_new', False):
-                    label += " [NEW]"
+                # Check if this person ID is assigned to multiple tracks
+                is_duplicate = person_id in duplicate_person_ids
                 
-                cv2.rectangle(vis_frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                cv2.putText(vis_frame, label, (int(x1), int(y1) - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                # Get person-specific color
+                color = (0, 0, 255) if is_duplicate else get_color_for_id(person_id)
+                
+                # Draw bounding box with person-specific color
+                cv2.rectangle(vis_frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+                
+                # Add label with name and confidence
+                label = f"{name} ({confidence:.2f})"
+                if is_duplicate:
+                    label += " ⚠️"  # Warning emoji for duplicate IDs
+                if is_new:
+                    label += " [NEW]"  # Indicate newly created person
+                
+                # Add background for text
+                text_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(vis_frame, 
+                            (int(x1), int(y1) - text_size[1] - 10), 
+                            (int(x1) + text_size[0], int(y1)), 
+                            color, -1)
+                
+                # Draw text in white
+                cv2.putText(vis_frame, label, (int(x1), int(y1) - 5), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                # Add colored dot to indicate new vs. database match
+                dot_color = (0, 0, 255) if is_new else (0, 255, 0)  # Red for new, Green for database match
+                dot_radius = 5
+                dot_position = (int(x2) - 10, int(y1) + 10)  # Top-right corner of box
+                cv2.circle(vis_frame, dot_position, dot_radius, dot_color, -1)
                 
                 # Add quality indicator
                 quality_color = (0, 255, 0) if quality > 0.7 else (0, 165, 255) if quality > 0.5 else (0, 0, 255)
-                cv2.putText(vis_frame, f"Q:{quality:.2f}", (int(x1), int(y2) + 20), 
+                quality_text = f"Q:{quality:.2f}"
+                cv2.putText(vis_frame, quality_text, (int(x1), int(y2) + 20), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, quality_color, 1)
+            else:
+                # For tracks without identity yet, use a default color
+                default_color = (0, 255, 255)  # Yellow
+                cv2.rectangle(vis_frame, (int(x1), int(y1)), (int(x2), int(y2)), default_color, 2)
+                cv2.putText(vis_frame, f"Track {track_id}", (int(x1), int(y1) - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, default_color, 2)
+
+        # Add counter showing active tracks vs unique people
+        num_active_tracks = len(tracks)
+        unique_people_ids = set()
+        for track_id in active_track_ids:
+            if track_id in track_identities:
+                unique_people_ids.add(track_identities[track_id]['person_id'])
+        num_unique_people = len(unique_people_ids)
+        
+        counter_text = f"Tracks: {num_active_tracks}, Unique People: {num_unique_people}"
+        cv2.putText(vis_frame, counter_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Add database size indicator
+        db_size = len(person_db.people) if hasattr(person_db, 'people') else 0
+        db_text = f"Database: {db_size} persons"
+        cv2.putText(vis_frame, db_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
         # Add FPS and frame info
         cv2.putText(vis_frame, f"FPS: {fps:.1f} | Frame: {frame_count}", 
                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        # Add database stats
-        if frame_count % 100 == 0:  # Update stats every 100 frames
-            db_stats = person_db.get_person_statistics()
-            stats_text = f"DB: {db_stats.get('total_persons', 0)} persons, {db_stats.get('total_active_embeddings', 0)} embeddings"
-            cv2.putText(vis_frame, stats_text, (10, 60), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         
         # Display and/or save frame
         if config.SAVE_VIDEO and video_writer is not None:
@@ -353,33 +478,15 @@ def main():
         key = cv2.waitKey(1) & 0xFF if config.SHOW_DISPLAY else -1
         if key == ord('q'):
             break
-        elif key == ord('s'):
-            # Save current state
-            print("\n=== Saving Database State ===")
-            cleanup_stats = person_db.cleanup_database()
-            print(f"Cleanup completed: {cleanup_stats}")
-            
-            # Print final statistics
-            final_stats = person_db.get_person_statistics()
-            print(f"Final database statistics: {final_stats}")
-            
-        elif key == ord('c'):
-            # Perform clustering analysis
-            print("\n=== Performing Clustering Analysis ===")
-            db_stats = person_db.get_person_statistics()
-            if db_stats.get('total_persons', 0) > 0:
-                # Get all person IDs and cluster their embeddings
-                conn = sqlite3.connect("person_embeddings.db")
-                cursor = conn.cursor()
-                cursor.execute('SELECT DISTINCT person_id FROM embeddings WHERE is_active = 1')
-                person_ids = [row[0] for row in cursor.fetchall()]
-                conn.close()
-                
-                for person_id in person_ids:
-                    cluster_result = person_db.cluster_person_embeddings(person_id)
-                    print(f"Person {person_id}: {cluster_result}")
-            else:
-                print("No persons in database to cluster")
+        elif key == ord('s'):  # Save database on demand
+            print("Manually saving person database...")
+            person_db.save_to_disk(db_path)
+            print(f"Database saved with {len(person_db.people)} persons")
+
+    # Final save of the database
+    print("Saving person database...")
+    person_db.save_to_disk(db_path)
+    print(f"Database saved with {len(person_db.people)} persons")
     
     # Cleanup
     cap.release()
@@ -388,17 +495,24 @@ def main():
         print(f"Output video saved to: {config.OUTPUT_VIDEO_PATH}")
     cv2.destroyAllWindows()
     
-    # Final statistics and cleanup
-    print("\n=== Final Processing Summary ===")
-    final_stats = person_db.get_person_statistics()
-    print(f"Total persons registered: {final_stats.get('total_persons', 0)}")
-    print(f"Total active embeddings: {final_stats.get('total_active_embeddings', 0)}")
-    print(f"Average embedding quality: {final_stats.get('average_quality', 0.0):.3f}")
-    print(f"Total recognition attempts: {final_stats.get('total_recognitions', 0)}")
+    # Print summary statistics
+    print("\n===== Processing Summary =====")
+    print(f"Total frames processed: {frame_count}")
+    print(f"Total people identified: {len(person_db.people)}")
+    print(f"Identification statistics:")
     
-    # Perform final cleanup
-    cleanup_stats = person_db.cleanup_database()
-    print(f"Final cleanup: {cleanup_stats}")
+    # Count new vs returning people
+    new_count = 0
+    returning_count = 0
+    for track_id, identity in track_identities.items():
+        if identity.get('is_new', False):
+            new_count += 1
+        else:
+            returning_count += 1
+    
+    print(f"- New people: {new_count}")
+    print(f"- Returning people: {returning_count}")
+    print("============================")
     
     print("Processing completed!")
 

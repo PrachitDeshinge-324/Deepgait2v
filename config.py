@@ -6,16 +6,27 @@ Configuration settings for the tracking application
 MODEL_PATH = 'weights/yolo11m.pt'
 SEG_MODEL_PATH = 'weights/yolo11m-seg.pt'
 GAIT_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"  # Update this path
-VIDEO_PATH = 'input/3c1.mp4'
+VIDEO_PATH = '../Person_new/input/3c.mp4'
 SIMILARITY_THRESHOLD = 0.3
-MAX_FRAMES = 1000
+MAX_FRAMES = 600
 
 # Output settings
-SAVE_VIDEO = True  # Whether to save output video
-OUTPUT_VIDEO_PATH = 'output/gait_recognition_output.mp4'  # Output video path
+# Add these lines to your existing config.py file
+
+# Data storage paths
+DATA_DIR = "data"  # Directory for storing data files like databases
+OUTPUT_VIDEO_PATH = "output/processed_video_3c.mp4"  # Path for saving output video
+OUTPUT_FRAMES_DIR = "output/frames"  # Directory for saving individual frames
+
+# Person identification settings
+IDENTIFICATION_THRESHOLD = 0.15  # Similarity threshold for positive identification
+SPATIAL_CONFLICT_THRESHOLD = 150  # Pixel distance threshold for spatial conflict detection
+
+# Processing limits
+MAX_FRAMES = float('inf')  # Maximum number of frames to process (inf = process all)
+SAVE_VIDEO = True  # Whether to save processed video
 SAVE_FRAMES = False  # Whether to save individual frames
-OUTPUT_FRAMES_DIR = 'output/frames'  # Directory for individual frames
-SHOW_DISPLAY = False  # Whether to show live video display
+SHOW_DISPLAY = True  # Whether to show display window
 
 # Tracker settings
 TRACKER_CONFIG = {

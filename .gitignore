@@ -7,3 +7,7 @@ __pycache__/
 .cache/
 .cache/*
 *.cache
+*.npy
+*.mp4
+data/
+*.DS_Store
