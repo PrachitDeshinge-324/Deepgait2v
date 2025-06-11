@@ -6,7 +6,7 @@ Configuration settings for the tracking application
 MODEL_PATH = 'weights/yolo11m.pt'
 SEG_MODEL_PATH = 'weights/yolo11m-seg.pt'
 GAIT_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"  # Update this path
-VIDEO_PATH = '../Person_new/input/3c.mp4'
+VIDEO_PATH = '../Person_new/input/3c1.mp4'
 SIMILARITY_THRESHOLD = 0.3
 MAX_FRAMES = 600
 
@@ -15,7 +15,7 @@ MAX_FRAMES = 600
 
 # Data storage paths
 DATA_DIR = "data"  # Directory for storing data files like databases
-OUTPUT_VIDEO_PATH = "output/processed_video_3c.mp4"  # Path for saving output video
+OUTPUT_VIDEO_PATH = "output/processed_video_3c1.mp4"  # Path for saving output video
 OUTPUT_FRAMES_DIR = "output/frames"  # Directory for saving individual frames
 
 # Person identification settings

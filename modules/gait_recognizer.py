@@ -4,6 +4,7 @@ import sys
 import os
 import logging
 from utils.device import get_best_device
+import cv2
 
 # Add OpenGait to path to import the model
 sys.path.append(os.path.join(os.path.dirname(__file__), "../OpenGait"))
@@ -187,66 +188,72 @@ class GaitRecognizer:
             import traceback
             traceback.print_exc()
             raise
-     
+
     def preprocess_silhouettes(self, silhouettes):
         """
-        Preprocess a sequence of silhouettes for the model
-        
-        Args:
-            silhouettes (list): List of silhouette images from video
-            
-        Returns:
-            tuple: Model inputs (silhouette tensor, sequence length)
+        Preprocess silhouettes to match DeepGaitV2 training pipeline
         """
         seq_len = len(silhouettes)
-        height, width = silhouettes[0].shape
         
-        # Create a single stacked tensor with shape [batch_size, seq_len, height, width]
-        sils_tensor = torch.zeros((1, seq_len, height, width), dtype=torch.float32)
+        # Debug print for input verification
+        print(f"Input: {len(silhouettes)} silhouettes, first shape: {silhouettes[0].shape}")
+        
+        # Resize silhouettes to expected dimensions (height=64, width=44)
+        resized_sils = []
+        for sil in silhouettes:
+            # Resize to 64x44 - common gait silhouette size
+            resized = cv2.resize(sil, (44, 64), interpolation=cv2.INTER_LINEAR)
+            resized_sils.append(resized)
+        
+        # Create tensor with proper dimensions for DeepGaitV2
+        # Shape should be [batch, channel, sequence, height, width]
+        sils_tensor = torch.zeros((1, 1, seq_len, 64, 44), dtype=torch.float32)
         
         # Fill tensor with normalized silhouettes (0-1 range)
-        for i, sil in enumerate(silhouettes):
-            sils_tensor[0, i] = torch.from_numpy(sil).float() / 255.0
+        for i, sil in enumerate(resized_sils):
+            sils_tensor[0, 0, i] = torch.from_numpy(sil).float() / 255.0
         
-        # Return the stacked tensor and sequence length
+        # Debug print for output verification
+        print(f"Output tensor shape: {sils_tensor.shape}")
+        
         return sils_tensor, seq_len
 
     def recognize(self, silhouettes):
-        """
-        Generate embedding for a sequence of silhouettes
-        
-        Args:
-            silhouettes (list): List of silhouette images from video
-            
-        Returns:
-            numpy.ndarray: Embedding vector
-        """
-        if not silhouettes or len(silhouettes) < 5:  # Need minimum sequence length
+        if len(silhouettes) == 0:
+            print("No silhouettes provided")
             return None
             
+        # Preprocess silhouettes
+        sils_tensor, seq_len = self.preprocess_silhouettes(silhouettes)
+        
+        # Add debug print to check sils_tensor shape
+        print(f"Preprocessed silhouettes shape: {sils_tensor.shape}, seq_len: {seq_len}")
+        
+        # Move to device
+        sils_tensor = sils_tensor.to(self.device)
+        
+        # Create dummy values for unused inputs
+        labs = torch.zeros(1).long().to(self.device)
+        typs = torch.zeros(1).long().to(self.device) 
+        vies = torch.zeros(1).long().to(self.device)
+        
+        # Fix: The TP module in DeepGaitV2 expects seqL as a list of sequence lengths
+        # Make sure the tensor is constructed properly
+        seq_tensor = torch.tensor([seq_len], dtype=torch.long).to(self.device)
+        seqL = [seq_tensor]  # Wrap in list as expected by TP module
+        
+        # Debug print to verify seqL format
+        print(f"seqL format: {type(seqL)}, value: {seqL}, element type: {type(seqL[0])}")
+        
+        # Run inference
         with torch.no_grad():
-            # Prepare inputs
-            sils_tensor, seqL = self.preprocess_silhouettes(silhouettes)
-            
-            # Move tensor to the correct device
-            sils_tensor = sils_tensor.to(self.device)
-            
-            # Create dummy tensors for unused inputs
-            batch_size = 1
-            labs = torch.zeros(batch_size, dtype=torch.long).to(self.device)
-            typs = torch.zeros(batch_size, dtype=torch.long).to(self.device)
-            vies = torch.zeros(batch_size, dtype=torch.long).to(self.device)
-            
-            # CRITICAL FIX: Format seqL as a LIST of integers, not a tensor
-            # This is what PackSequenceWrapper in OpenGait expects
-            seqL_tensor = torch.tensor([seqL], dtype=torch.long).to(self.device)
-            seqL = [seqL_tensor]  # Now it's a list containing a tensor
-            
-            # Forward pass - pass the tensor directly
-            inputs = [sils_tensor], labs, typs, vies, seqL
-            outputs = self.model(inputs)
-            
-            # Extract embedding
-            embedding = outputs['inference_feat']['embeddings'].cpu().numpy()
-            
-            return embedding
+            try:
+                inputs = (sils_tensor, labs, typs, vies, seqL)
+                outputs = self.model(inputs)
+                embeddings = outputs['inference_feat']['embeddings']
+                return embeddings.cpu().numpy()
+            except Exception as e:
+                print(f"Error during inference: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return None

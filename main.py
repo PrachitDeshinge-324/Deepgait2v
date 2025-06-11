@@ -117,7 +117,7 @@ def main():
             if hasattr(person_db, 'index') and person_db.index.ntotal > 0:
                 print("Testing database search functionality...")
                 test_emb = np.random.rand(1, embedding_dimension).astype(np.float32)
-                test_results = person_db.identify_person(test_emb, top_k=3, threshold=0.1)
+                test_results = person_db.identify_person(test_emb, top_k=5, threshold=0.1)
                 print(f"Test search returned {len(test_results)} results")
             # Print a few entries to verify content
             print("Database contents:")
