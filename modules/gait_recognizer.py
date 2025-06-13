@@ -196,7 +196,7 @@ class GaitRecognizer:
         seq_len = len(silhouettes)
         
         # Debug print for input verification
-        print(f"Input: {len(silhouettes)} silhouettes, first shape: {silhouettes[0].shape}")
+        # print(f"Input: {len(silhouettes)} silhouettes, first shape: {silhouettes[0].shape}")
         
         # Resize silhouettes to expected dimensions (height=64, width=44)
         resized_sils = []
@@ -214,7 +214,7 @@ class GaitRecognizer:
             sils_tensor[0, 0, i] = torch.from_numpy(sil).float() / 255.0
         
         # Debug print for output verification
-        print(f"Output tensor shape: {sils_tensor.shape}")
+        # print(f"Output tensor shape: {sils_tensor.shape}")
         
         return sils_tensor, seq_len
 
@@ -227,7 +227,7 @@ class GaitRecognizer:
         sils_tensor, seq_len = self.preprocess_silhouettes(silhouettes)
         
         # Add debug print to check sils_tensor shape
-        print(f"Preprocessed silhouettes shape: {sils_tensor.shape}, seq_len: {seq_len}")
+        # print(f"Preprocessed silhouettes shape: {sils_tensor.shape}, seq_len: {seq_len}")
         
         # Move to device
         sils_tensor = sils_tensor.to(self.device)
@@ -243,7 +243,7 @@ class GaitRecognizer:
         seqL = [seq_tensor]  # Wrap in list as expected by TP module
         
         # Debug print to verify seqL format
-        print(f"seqL format: {type(seqL)}, value: {seqL}, element type: {type(seqL[0])}")
+        # print(f"seqL format: {type(seqL)}, value: {seqL}, element type: {type(seqL[0])}")
         
         # Run inference
         with torch.no_grad():

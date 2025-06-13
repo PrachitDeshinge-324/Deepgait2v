@@ -100,6 +100,9 @@ def main():
     embedding_dimension = 256*16  # Adjust based on your actual embedding size
     person_db = PersonEmbeddingDatabase(dimension=embedding_dimension)
     
+    # Initialize person counter for sequential IDs
+    next_person_id = 1
+    
     # Load existing database if available
     db_path = os.path.join(config.DATA_DIR, "person_database")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -126,6 +129,19 @@ def main():
                     print(f"  Person: {pid}, Name: {info['name']}, Quality: {info['quality']}")
                 else:
                     break
+                    
+            # Extract the highest person ID number from existing entries
+            existing_ids = []
+            for person_id in person_db.people.keys():
+                # Extract numeric part from IDs that follow the pattern "P123"
+                if person_id.startswith('P') and person_id[1:].isdigit():
+                    existing_ids.append(int(person_id[1:]))
+            
+            # Set next_person_id to highest value + 1 if any exist
+            if existing_ids:
+                next_person_id = max(existing_ids) + 1
+                print(f"Starting person numbering at {next_person_id} based on existing database")
+                
         except Exception as e:
             print(f"ERROR: Database loading failed: {e}")
             print("Creating a new database instead.")
@@ -300,7 +316,7 @@ def main():
                                 # DEBUG: Print available matches
                                 print(f"Available matches (not used by other tracks): {len(available_matches)}")
                                 
-                                # FIX: Check if we have available matches and use them
+                                # Check if we have available matches and use them
                                 if len(available_matches) > 0:
                                     # Use best available match
                                     person_id, similarity, name, stored_quality = available_matches[0]
@@ -325,13 +341,14 @@ def main():
                                     # No available matches - create new person
                                     print(f"No available matches for Track {track_id} - creating new person")
                                     
-                                    # Generate unique ID with microsecond precision
-                                    timestamp = int(time.time() * 1000000)  # Microseconds
-                                    random_component = np.random.randint(0, 1000000)
-                                    new_person_id = f"P{timestamp}{random_component}"
+                                    # Use sequential numbering for consistent IDs
+                                    new_person_id = f"P{next_person_id:04d}"
                                     
-                                    # Generate name
-                                    new_person_name = f"Person_{new_person_id[-6:]}"
+                                    # Generate a simple numbered name
+                                    new_person_name = f"Person-{next_person_id:04d}"
+                                    
+                                    # Increment the counter for next time
+                                    next_person_id += 1
                                     
                                     # Add to database
                                     person_db.add_person(
@@ -352,9 +369,9 @@ def main():
                                     }
                                     
                                     if matches:
-                                        print(f"Track {track_id}: Created new person because all matches were already assigned to other tracks")
+                                        print(f"Track {track_id}: Created new person {new_person_name} because all matches were already assigned to other tracks")
                                     else:
-                                        print(f"Track {track_id}: Created new person because no matches found")
+                                        print(f"Track {track_id}: Created new person {new_person_name} because no matches found")
         
         # Clean up old tracks that are no longer active
         for track_id in list(track_silhouettes.keys()):
