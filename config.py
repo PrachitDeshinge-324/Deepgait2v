@@ -7,11 +7,12 @@ MODEL_PATH = 'weights/yolo11m.pt'
 SEG_MODEL_PATH = 'weights/yolo11m-seg.pt'
 DEEPGAITV2_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"
 GAITBASE_MODEL_PATH = "weights/GaitBase_DA-180000.pt"
-VIDEO_PATH = '../Person_new/input/My Movie.mp4'
+SKELETONGAITPP_MODEL_PATH = "weights/SkeletonGaitPP_30_DA-50000.pt"
+VIDEO_PATH = '../Person_new/input/3c.mp4'
 
 # Data storage paths
 DATA_DIR = "data"  # Directory for storing data files like databases
-OUTPUT_VIDEO_PATH = "output/processed_video_MM.mp4"  # Path for saving output video
+OUTPUT_VIDEO_PATH = "output/processed_video_3c_SPP.mp4"  # Path for saving output video
 OUTPUT_FRAMES_DIR = "output/frames"  # Directory for saving individual frames
 
 # Person identification settings
@@ -56,7 +57,7 @@ SILHOUETTE_CONFIG = {
 }
 
 # Model Selection and Configuration
-GAIT_MODEL_TYPE = "GaitBase"  # Options: "DeepGaitV2" or "GaitBase" - Change this to switch models
+GAIT_MODEL_TYPE = "SkeletonGaitPP"  # Options: "DeepGaitV2", "GaitBase", or "SkeletonGaitPP" - Change this to switch models
 
 # DeepGaitV2 Configuration
 # This is a CNN-based model with excellent performance on various datasets
@@ -97,6 +98,20 @@ GAITBASE_CONFIG = {
     'bin_num': [16]                  # Horizontal pooling pyramid bins
 }
 
+# SkeletonGait++ Configuration
+# This model uses both pose heatmaps and silhouettes for enhanced gait recognition
+SKELETONGAITPP_CONFIG = {
+    'Backbone': {
+        'in_channels': 3,            # 2 channels for pose heatmaps + 1 for silhouette
+        'blocks': [1, 4, 4, 1],      # Layer configuration: [layer1, layer2, layer3, layer4]
+        'C': 2                       # Channel multiplier
+    },
+    'SeparateBNNecks': {
+        'class_num': 3000            # Number of identities in training set - adjust based on your trained model
+    },
+    'use_emb2': False                # Whether to use second embedding layer output for inference
+}
+
 # Get the appropriate config and model path based on selected model type
 def get_current_model_config():
     """Get the configuration for the currently selected model"""
@@ -104,8 +119,10 @@ def get_current_model_config():
         return DEEPGAITV2_CONFIG
     elif GAIT_MODEL_TYPE == "GaitBase":
         return GAITBASE_CONFIG
+    elif GAIT_MODEL_TYPE == "SkeletonGaitPP":
+        return SKELETONGAITPP_CONFIG
     else:
-        raise ValueError(f"Unknown model type: {GAIT_MODEL_TYPE}. Use 'DeepGaitV2' or 'GaitBase'")
+        raise ValueError(f"Unknown model type: {GAIT_MODEL_TYPE}. Use 'DeepGaitV2', 'GaitBase', or 'SkeletonGaitPP'")
 
 def get_current_model_path():
     """Get the model path for the currently selected model"""
@@ -113,8 +130,10 @@ def get_current_model_path():
         return DEEPGAITV2_MODEL_PATH
     elif GAIT_MODEL_TYPE == "GaitBase":
         return GAITBASE_MODEL_PATH
+    elif GAIT_MODEL_TYPE == "SkeletonGaitPP":
+        return SKELETONGAITPP_MODEL_PATH
     else:
-        raise ValueError(f"Unknown model type: {GAIT_MODEL_TYPE}. Use 'DeepGaitV2' or 'GaitBase'")
+        raise ValueError(f"Unknown model type: {GAIT_MODEL_TYPE}. Use 'DeepGaitV2', 'GaitBase', or 'SkeletonGaitPP'")
 
 # Dynamic config assignment based on selected model
 GAIT_RECOGNIZER_CONFIG = get_current_model_config()

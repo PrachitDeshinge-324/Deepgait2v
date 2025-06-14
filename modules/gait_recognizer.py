@@ -104,9 +104,19 @@ dist.get_rank = lambda: 0
 dist.get_world_size = lambda: 1
 dist.is_initialized = lambda: True
 
-# Now we can safely import both models
+# Now we can safely import all three models
 from opengait.modeling.models import DeepGaitV2
 from opengait.modeling.models.baseline import Baseline as GaitBase
+
+# Import SkeletonGait++ with custom loader to resolve import issues
+SkeletonGaitPP = None
+try:
+    from modules.skeletongait_loader import SkeletonGaitPP, create_skeletongait_pp
+    print("✓ SkeletonGaitPP imported successfully via custom loader")
+except Exception as e:
+    print(f"Info: SkeletonGait++ not available ({str(e)[:50]}...)")
+    print("DeepGaitV2 and GaitBase models are fully functional.")
+    SkeletonGaitPP = None
 
 class GaitRecognizer:
     def __init__(self, model_type=None, model_path=None, cfg=None):
@@ -136,8 +146,21 @@ class GaitRecognizer:
         self.device = self._setup_device()
         
         # Validate model type
-        if model_type not in ["DeepGaitV2", "GaitBase"]:
-            raise ValueError(f"Unsupported model type: {model_type}. Use 'DeepGaitV2' or 'GaitBase'")
+        if model_type not in ["DeepGaitV2", "GaitBase", "SkeletonGaitPP"]:
+            raise ValueError(f"Unsupported model type: {model_type}. Use 'DeepGaitV2', 'GaitBase', or 'SkeletonGaitPP'")
+        
+        # Check if SkeletonGaitPP is available when requested
+        if model_type == "SkeletonGaitPP" and SkeletonGaitPP is None:
+            print("\n" + "="*60)
+            print("⚠️  SKELETONGAIT++ NOT AVAILABLE")
+            print("="*60)
+            print("SkeletonGait++ model could not be imported.")
+            print("Please check if OpenGait dependencies are properly installed.")
+            print("\nRECOMMENDED ALTERNATIVES:")
+            print("1. Use DeepGaitV2: Change config.GAIT_MODEL_TYPE = 'DeepGaitV2'")
+            print("2. Use GaitBase: Change config.GAIT_MODEL_TYPE = 'GaitBase'")
+            print("="*60)
+            raise ValueError("SkeletonGaitPP not available. Please use DeepGaitV2 or GaitBase.")
         
         # Validate and adjust configuration for compatibility
         cfg = self._validate_config(model_type, cfg)
@@ -151,8 +174,10 @@ class GaitRecognizer:
         try:
             if model_type == "DeepGaitV2":
                 self.model = DeepGaitV2(complete_cfg, False)
-            else:  # GaitBase
+            elif model_type == "GaitBase":
                 self.model = GaitBase(complete_cfg, False)
+            else:  # SkeletonGaitPP
+                self.model = SkeletonGaitPP(complete_cfg, False)
                 
             self.model.to(self.device)
             
@@ -207,6 +232,24 @@ class GaitRecognizer:
             if 'SeparateBNNecks' not in cfg_copy:
                 cfg_copy['SeparateBNNecks'] = {'class_num': 3000}
                 
+        elif model_type == "SkeletonGaitPP":
+            # SkeletonGait++ requires specific configuration
+            if 'Backbone' not in cfg_copy:
+                cfg_copy['Backbone'] = {
+                    'in_channels': 3,
+                    'blocks': [1, 4, 4, 1],
+                    'C': 2
+                }
+            
+            # Ensure required fields are present
+            if 'SeparateBNNecks' not in cfg_copy:
+                cfg_copy['SeparateBNNecks'] = {'class_num': 3000}
+                
+            # Set input channels for multi-modal input (pose + silhouette)
+            if cfg_copy['Backbone']['in_channels'] != 3:
+                print("WARNING: SkeletonGait++ requires 3 input channels (2 for pose + 1 for silhouette)")
+                cfg_copy['Backbone']['in_channels'] = 3
+                
         elif model_type == "GaitBase":
             # Validate GaitBase specific configurations
             required_fields = ['backbone_cfg', 'SeparateFCs', 'SeparateBNNecks', 'bin_num']
@@ -230,7 +273,12 @@ class GaitRecognizer:
 
     def _create_complete_config(self, model_type, cfg):
         """Create complete configuration for the model"""
-        model_type_name = "DeepGaitV2" if model_type == "DeepGaitV2" else "Baseline"
+        if model_type == "DeepGaitV2":
+            model_type_name = "DeepGaitV2"
+        elif model_type == "SkeletonGaitPP":
+            model_type_name = "SkeletonGaitPP"
+        else:  # GaitBase
+            model_type_name = "Baseline"
         
         complete_cfg = {
             'model_cfg': {
@@ -270,12 +318,9 @@ class GaitRecognizer:
     def preprocess_silhouettes(self, silhouettes):
         """
         Preprocess silhouettes to match model training pipeline
-        Both DeepGaitV2 and GaitBase use compatible input formats
+        DeepGaitV2 and GaitBase use silhouettes only, SkeletonGaitPP uses pose+silhouette
         """
         seq_len = len(silhouettes)
-        
-        # Debug print for input verification
-        # print(f"Input: {len(silhouettes)} silhouettes, first shape: {silhouettes[0].shape}")
         
         # Resize silhouettes to expected dimensions (height=64, width=44)
         resized_sils = []
@@ -284,16 +329,62 @@ class GaitRecognizer:
             resized = cv2.resize(sil, (44, 64), interpolation=cv2.INTER_LINEAR)
             resized_sils.append(resized)
         
-        # Both models can handle the same input format: [batch, sequence, height, width]
-        # The models will internally handle channel dimensions as needed
-        sils_tensor = torch.zeros((1, seq_len, 64, 44), dtype=torch.float32)
-        for i, sil in enumerate(resized_sils):
-            sils_tensor[0, i] = torch.from_numpy(sil).float() / 255.0
-        
-        # Debug print for output verification
-        # print(f"Output tensor shape: {sils_tensor.shape}")
-        
-        return sils_tensor, seq_len
+        if self.model_type == "SkeletonGaitPP":
+            # SkeletonGaitPP requires multimodal input: pose heatmaps (2 channels) + silhouette (1 channel)
+            # IMPORTANT: The original model expects separate pose heatmaps, not generated from silhouette
+            try:
+                # Import pose generator
+                import sys
+                import os
+                sys.path.append(os.path.dirname(__file__))
+                from pose_generator import PoseHeatmapGenerator
+                pose_generator = PoseHeatmapGenerator(target_size=(64, 44))
+                
+                # Generate pose heatmaps from silhouettes (2 channels)
+                pose_heatmaps_list = []
+                sil_list = []
+                
+                for sil in resized_sils:
+                    # Generate pose heatmap (2 channels)
+                    pose_heatmap = pose_generator.generate_pose_from_silhouette(sil)
+                    pose_heatmaps_list.append(pose_heatmap)
+                    
+                    # Keep silhouette as single channel
+                    sil_normalized = sil.astype(np.float32) / 255.0
+                    sil_list.append(sil_normalized)
+                
+                # Stack to create sequences
+                pose_heatmaps = np.stack(pose_heatmaps_list, axis=0)  # [T, 2, H, W]
+                silhouettes_seq = np.stack(sil_list, axis=0)  # [T, H, W]
+                
+                # The model expects the input to be concatenated in the preprocessing phase
+                # but internally splits it into pose (first 2 channels) and silhouette (last channel)
+                multimodal_input = np.concatenate([
+                    pose_heatmaps,  # [T, 2, H, W]
+                    silhouettes_seq[:, np.newaxis, :, :]  # [T, 1, H, W]
+                ], axis=1)  # [T, 3, H, W]
+                
+                # Convert to tensor: [batch, sequence, channels, height, width]
+                multimodal_tensor = torch.from_numpy(multimodal_input).float().unsqueeze(0)
+                return multimodal_tensor, seq_len
+                
+            except ImportError:
+                print("Warning: PoseHeatmapGenerator not available. Using silhouette-only input for SkeletonGaitPP.")
+                # Fallback: create 3-channel input with silhouette duplicated
+                sils_tensor = torch.zeros((1, seq_len, 3, 64, 44), dtype=torch.float32)
+                for i, sil in enumerate(resized_sils):
+                    sil_normalized = torch.from_numpy(sil).float() / 255.0
+                    # Use silhouette for all 3 channels as fallback
+                    sils_tensor[0, i, 0] = sil_normalized  # pose_x (placeholder)
+                    sils_tensor[0, i, 1] = sil_normalized  # pose_y (placeholder)
+                    sils_tensor[0, i, 2] = sil_normalized  # silhouette
+                return sils_tensor, seq_len
+        else:
+            # DeepGaitV2 and GaitBase use single-channel silhouette input
+            sils_tensor = torch.zeros((1, seq_len, 64, 44), dtype=torch.float32)
+            for i, sil in enumerate(resized_sils):
+                sils_tensor[0, i] = torch.from_numpy(sil).float() / 255.0
+            return sils_tensor, seq_len
 
     def recognize(self, silhouettes):
         """
@@ -333,8 +424,23 @@ class GaitRecognizer:
         # Run inference
         with torch.no_grad():
             try:
-                # Prepare inputs - both models use the same input format
-                inputs = ([sils_tensor], labs, typs, vies, seqL)
+                if self.model_type == "SkeletonGaitPP":
+                    # SkeletonGaitPP expects multimodal input [pose_heatmaps, silhouettes]
+                    # sils_tensor already contains [pose_x, pose_y, silhouette] in 3 channels
+                    # Split into pose heatmaps and silhouettes
+                    if sils_tensor.dim() == 5:  # [batch, seq, channels, height, width]
+                        pose_heatmaps = sils_tensor[:, :, :2, :, :]  # First 2 channels for pose
+                        silhouettes = sils_tensor[:, :, 2:3, :, :]   # Last channel for silhouette
+                        # Combine pose channels into single heatmap input
+                        pose_heatmaps = pose_heatmaps.view(pose_heatmaps.shape[0], pose_heatmaps.shape[1], -1, pose_heatmaps.shape[3], pose_heatmaps.shape[4])
+                        inputs = ([pose_heatmaps, silhouettes.squeeze(2)], labs, typs, vies, seqL)
+                    else:
+                        # Fallback for unexpected tensor format
+                        inputs = ([sils_tensor], labs, typs, vies, seqL)
+                else:
+                    # DeepGaitV2 and GaitBase use single silhouette input
+                    inputs = ([sils_tensor], labs, typs, vies, seqL)
+                    
                 outputs = self.model(inputs)
                 embeddings = outputs['inference_feat']['embeddings']
                 return embeddings.cpu().numpy()

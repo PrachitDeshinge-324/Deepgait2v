@@ -3,7 +3,9 @@ import cv2
 from collections import defaultdict, deque
 from ultralytics import YOLO
 from utils.device import get_best_device
+from .pose_generator import PoseHeatmapGenerator, SimplifiedPoseGenerator
 import os
+import config
 
 class SilhouetteExtractor:
     def __init__(self, config, model_path="../weights/yolo11m-seg.pt"):
