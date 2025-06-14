@@ -104,39 +104,137 @@ dist.get_rank = lambda: 0
 dist.get_world_size = lambda: 1
 dist.is_initialized = lambda: True
 
-# Now we can safely import DeepGaitV2
+# Now we can safely import both models
 from opengait.modeling.models import DeepGaitV2
+from opengait.modeling.models.baseline import Baseline as GaitBase
 
 class GaitRecognizer:
-    def __init__(self, model_path, cfg):
+    def __init__(self, model_type=None, model_path=None, cfg=None):
         """
-        Initialize the gait recognition model
+        Initialize the gait recognition model based on config settings
         
         Args:
-            model_path (str): Path to the trained DeepGaitV2 model checkpoint
-            cfg (dict): Configuration for the model
+            model_type (str): Type of model to use - will use config.GAIT_MODEL_TYPE if None
+            model_path (str): Path to the trained model checkpoint - will use config path if None
+            cfg (dict): Configuration for the model - will use config settings if None
         """
-        # Force CPU for 3D operations
-        device = get_best_device()
-        if device == 'mps':
-            self.device = torch.device("cpu")
-            print(f"Using CPU for model inference (3D convolutions not supported on MPS)")
-        else:
-            self.device = torch.device(device)
-        # Check if we can switch to 2D mode instead of p3d
-        if 'Backbone' in cfg and 'mode' in cfg['Backbone'] and cfg['Backbone']['mode'] == 'p3d':
-            print("Detected p3d mode which uses 3D convolutions. Trying to switch to 2d mode...")
-            try:
-                # Try to modify the config to use 2D mode
-                cfg['Backbone']['mode'] = '2d'
-                print("Switched to 2d mode for compatibility with Apple Silicon")
-            except Exception as e:
-                print(f"Could not modify mode, continuing with CPU: {e}")
+        # Use config values if not provided
+        if model_type is None:
+            from config import GAIT_MODEL_TYPE
+            model_type = GAIT_MODEL_TYPE
+            
+        if model_path is None:
+            from config import get_current_model_path
+            model_path = get_current_model_path()
+            
+        if cfg is None:
+            from config import get_current_model_config
+            cfg = get_current_model_config()
+        
+        self.model_type = model_type
+        self.current_model_type = model_type  # For compatibility with display code
+        self.device = self._setup_device()
+        
+        # Validate model type
+        if model_type not in ["DeepGaitV2", "GaitBase"]:
+            raise ValueError(f"Unsupported model type: {model_type}. Use 'DeepGaitV2' or 'GaitBase'")
+        
+        # Validate and adjust configuration for compatibility
+        cfg = self._validate_config(model_type, cfg)
         
         # Create a complete config for the model
+        complete_cfg = self._create_complete_config(model_type, cfg)
+        
+        # Initialize model
+        print(f"Loading {model_type} model from {model_path}...")
+        
+        try:
+            if model_type == "DeepGaitV2":
+                self.model = DeepGaitV2(complete_cfg, False)
+            else:  # GaitBase
+                self.model = GaitBase(complete_cfg, False)
+                
+            self.model.to(self.device)
+            
+            # Load weights
+            checkpoint = torch.load(model_path, map_location=self.device)
+            if 'state_dict' in checkpoint:
+                checkpoint = checkpoint['state_dict']
+                
+            self.model.load_state_dict(checkpoint, strict=False)
+            self.model.eval()
+            print(f"{model_type} model loaded successfully")
+            
+        except Exception as e:
+            print(f"Error loading {model_type} model: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def _setup_device(self):
+        """Setup the appropriate device for inference"""
+        device = get_best_device()
+        if device == 'mps':
+            # Force CPU for 3D operations which aren't supported on MPS
+            actual_device = torch.device("cpu")
+            print(f"Using CPU for model inference (3D convolutions not supported on MPS)")
+        else:
+            actual_device = torch.device(device)
+        return actual_device
+    
+    def _validate_config(self, model_type, cfg):
+        """
+        Validate and adjust configuration for compatibility
+        
+        Args:
+            model_type: Type of model
+            cfg: Configuration dictionary
+            
+        Returns:
+            Validated configuration
+        """
+        cfg_copy = cfg.copy()
+        
+        if model_type == "DeepGaitV2":
+            # Check for 3D convolution modes that might not be supported
+            if 'Backbone' in cfg_copy and 'mode' in cfg_copy['Backbone']:
+                if cfg_copy['Backbone']['mode'] == 'p3d':
+                    print("WARNING: p3d mode detected. This uses 3D convolutions.")
+                    print("Switching to 2d mode for better compatibility...")
+                    cfg_copy['Backbone']['mode'] = '2d'
+                    
+            # Ensure required fields are present
+            if 'SeparateBNNecks' not in cfg_copy:
+                cfg_copy['SeparateBNNecks'] = {'class_num': 3000}
+                
+        elif model_type == "GaitBase":
+            # Validate GaitBase specific configurations
+            required_fields = ['backbone_cfg', 'SeparateFCs', 'SeparateBNNecks', 'bin_num']
+            for field in required_fields:
+                if field not in cfg_copy:
+                    print(f"WARNING: Missing required field '{field}' in GaitBase config")
+                    
+            # Ensure bin_num is present
+            if 'bin_num' not in cfg_copy:
+                cfg_copy['bin_num'] = [16]
+                
+        return cfg_copy
+    
+    def get_model_info(self):
+        """Get information about current model"""
+        model_info = {
+            'model_type': self.model_type,
+            'device': str(self.device)
+        }
+        return model_info
+
+    def _create_complete_config(self, model_type, cfg):
+        """Create complete configuration for the model"""
+        model_type_name = "DeepGaitV2" if model_type == "DeepGaitV2" else "Baseline"
+        
         complete_cfg = {
             'model_cfg': {
-                'model': 'DeepGaitV2',
+                'model': model_type_name,
                 **cfg
             },
             'data_cfg': {
@@ -167,31 +265,12 @@ class GaitRecognizer:
                 'enable_float16': False
             }
         }
-        
-        # Initialize model
-        print("Loading DeepGaitV2 model...")
-        
-        try:
-            self.model = DeepGaitV2(complete_cfg, False)
-            self.model.to(self.device)
-            
-            # Load weights
-            checkpoint = torch.load(model_path, map_location=self.device)
-            if 'state_dict' in checkpoint:
-                checkpoint = checkpoint['state_dict']
-                
-            self.model.load_state_dict(checkpoint, strict=False)
-            self.model.eval()
-            print("DeepGaitV2 model loaded successfully")
-        except Exception as e:
-            print(f"Error loading DeepGaitV2 model: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
+        return complete_cfg
 
     def preprocess_silhouettes(self, silhouettes):
         """
-        Preprocess silhouettes to match DeepGaitV2 training pipeline
+        Preprocess silhouettes to match model training pipeline
+        Both DeepGaitV2 and GaitBase use compatible input formats
         """
         seq_len = len(silhouettes)
         
@@ -205,13 +284,11 @@ class GaitRecognizer:
             resized = cv2.resize(sil, (44, 64), interpolation=cv2.INTER_LINEAR)
             resized_sils.append(resized)
         
-        # Create tensor with proper dimensions for DeepGaitV2
-        # Shape should be [batch, channel, sequence, height, width]
-        sils_tensor = torch.zeros((1, 1, seq_len, 64, 44), dtype=torch.float32)
-        
-        # Fill tensor with normalized silhouettes (0-1 range)
+        # Both models can handle the same input format: [batch, sequence, height, width]
+        # The models will internally handle channel dimensions as needed
+        sils_tensor = torch.zeros((1, seq_len, 64, 44), dtype=torch.float32)
         for i, sil in enumerate(resized_sils):
-            sils_tensor[0, 0, i] = torch.from_numpy(sil).float() / 255.0
+            sils_tensor[0, i] = torch.from_numpy(sil).float() / 255.0
         
         # Debug print for output verification
         # print(f"Output tensor shape: {sils_tensor.shape}")
@@ -219,6 +296,15 @@ class GaitRecognizer:
         return sils_tensor, seq_len
 
     def recognize(self, silhouettes):
+        """
+        Perform gait recognition using the currently active model
+        
+        Args:
+            silhouettes: List of silhouette arrays
+            
+        Returns:
+            Feature embeddings from the model
+        """
         if len(silhouettes) == 0:
             print("No silhouettes provided")
             return None
@@ -237,10 +323,9 @@ class GaitRecognizer:
         typs = torch.zeros(1).long().to(self.device) 
         vies = torch.zeros(1).long().to(self.device)
         
-        # Fix: The TP module in DeepGaitV2 expects seqL as a list of sequence lengths
-        # Make sure the tensor is constructed properly
+        # Both models expect seqL as a list of sequence lengths
         seq_tensor = torch.tensor([seq_len], dtype=torch.long).to(self.device)
-        seqL = [seq_tensor]  # Wrap in list as expected by TP module
+        seqL = [seq_tensor]
         
         # Debug print to verify seqL format
         # print(f"seqL format: {type(seqL)}, value: {seqL}, element type: {type(seqL[0])}")
@@ -248,12 +333,13 @@ class GaitRecognizer:
         # Run inference
         with torch.no_grad():
             try:
-                inputs = (sils_tensor, labs, typs, vies, seqL)
+                # Prepare inputs - both models use the same input format
+                inputs = ([sils_tensor], labs, typs, vies, seqL)
                 outputs = self.model(inputs)
                 embeddings = outputs['inference_feat']['embeddings']
                 return embeddings.cpu().numpy()
             except Exception as e:
-                print(f"Error during inference: {str(e)}")
+                print(f"Error during inference with {self.model_type}: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 return None

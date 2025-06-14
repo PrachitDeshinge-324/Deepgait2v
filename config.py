@@ -5,12 +5,13 @@ Configuration settings for the tracking application
 # Paths
 MODEL_PATH = 'weights/yolo11m.pt'
 SEG_MODEL_PATH = 'weights/yolo11m-seg.pt'
-GAIT_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"  # Update this path
-VIDEO_PATH = '../Person_new/input/3c.mp4'
+DEEPGAITV2_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"
+GAITBASE_MODEL_PATH = "weights/GaitBase_DA-180000.pt"
+VIDEO_PATH = '../Person_new/input/My Movie.mp4'
 
 # Data storage paths
 DATA_DIR = "data"  # Directory for storing data files like databases
-OUTPUT_VIDEO_PATH = "output/processed_video_3c.mp4"  # Path for saving output video
+OUTPUT_VIDEO_PATH = "output/processed_video_MM.mp4"  # Path for saving output video
 OUTPUT_FRAMES_DIR = "output/frames"  # Directory for saving individual frames
 
 # Person identification settings
@@ -19,10 +20,12 @@ IDENTIFICATION_THRESHOLD = 0.15  # Similarity threshold for positive identificat
 SPATIAL_CONFLICT_THRESHOLD = 150  # Pixel distance threshold for spatial conflict detection
 
 # Processing limits
-MAX_FRAMES = 600
+MAX_FRAMES = 6000
 SAVE_VIDEO = True  # Whether to save processed video
 SAVE_FRAMES = False  # Whether to save individual frames
 SHOW_DISPLAY = True  # Whether to show display window
+VERBOSE = False  # Whether to show detailed processing logs
+SHOW_PROGRESS = True  # Whether to show progress bar
 
 # Tracker settings
 TRACKER_CONFIG = {
@@ -52,19 +55,70 @@ SILHOUETTE_CONFIG = {
     'max_cache_size': 50
 }
 
-# Update the GAIT_RECOGNIZER_CONFIG to use 2D mode
-GAIT_RECOGNIZER_CONFIG = {
+# Model Selection and Configuration
+GAIT_MODEL_TYPE = "GaitBase"  # Options: "DeepGaitV2" or "GaitBase" - Change this to switch models
+
+# DeepGaitV2 Configuration
+# This is a CNN-based model with excellent performance on various datasets
+DEEPGAITV2_CONFIG = {
     'Backbone': {
         'in_channels': 1,
-        'mode': '2d',  # Changed from 'p3d' to '2d' for MPS compatibility
-        'layers': [1, 4, 4, 1],
-        'channels': [64, 128, 256, 512]
+        'mode': '2d',  # Changed from 'p3d' to '2d' for MPS compatibility and better performance
+        'layers': [1, 4, 4, 1],  # Layer configuration: [layer1, layer2, layer3, layer4]
+        'channels': [64, 128, 256, 512]  # Channel progression through layers
     },
     'SeparateBNNecks': {
-        'class_num': 3000  # Adjust based on your trained model
+        'class_num': 3000  # Number of identities in training set - adjust based on your trained model
     },
-    'use_emb2': False
+    'use_emb2': False  # Whether to use second embedding layer output for inference
 }
+
+# GaitBase Configuration 
+# This is the baseline model providing strong performance with simpler architecture
+GAITBASE_CONFIG = {
+    'backbone_cfg': {
+        'type': 'ResNet9',           # ResNet-9 backbone architecture
+        'block': 'BasicBlock',       # Use BasicBlock (no bottleneck)
+        'channels': [64, 128, 256, 512],  # Channel progression
+        'layers': [1, 1, 1, 1],      # Number of blocks per layer
+        'strides': [1, 2, 2, 1],     # Stride for each layer
+        'maxpool': False             # Disable max pooling in the first layer
+    },
+    'SeparateFCs': {
+        'in_channels': 512,          # Input channels from backbone
+        'out_channels': 256,         # Output feature dimension
+        'parts_num': 16              # Number of horizontal parts for HPP
+    },
+    'SeparateBNNecks': {
+        'class_num': 3000,           # Number of identities - adjust based on your trained model
+        'in_channels': 256,          # Input channels from SeparateFCs
+        'parts_num': 16              # Number of parts (should match SeparateFCs)
+    },
+    'bin_num': [16]                  # Horizontal pooling pyramid bins
+}
+
+# Get the appropriate config and model path based on selected model type
+def get_current_model_config():
+    """Get the configuration for the currently selected model"""
+    if GAIT_MODEL_TYPE == "DeepGaitV2":
+        return DEEPGAITV2_CONFIG
+    elif GAIT_MODEL_TYPE == "GaitBase":
+        return GAITBASE_CONFIG
+    else:
+        raise ValueError(f"Unknown model type: {GAIT_MODEL_TYPE}. Use 'DeepGaitV2' or 'GaitBase'")
+
+def get_current_model_path():
+    """Get the model path for the currently selected model"""
+    if GAIT_MODEL_TYPE == "DeepGaitV2":
+        return DEEPGAITV2_MODEL_PATH
+    elif GAIT_MODEL_TYPE == "GaitBase":
+        return GAITBASE_MODEL_PATH
+    else:
+        raise ValueError(f"Unknown model type: {GAIT_MODEL_TYPE}. Use 'DeepGaitV2' or 'GaitBase'")
+
+# Dynamic config assignment based on selected model
+GAIT_RECOGNIZER_CONFIG = get_current_model_config()
+GAIT_MODEL_PATH = get_current_model_path()
 
 # Quality Assessment Configuration
 QUALITY_ASSESSOR_CONFIG = {

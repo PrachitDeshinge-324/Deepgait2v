@@ -12,6 +12,7 @@ import sqlite3
 import hashlib
 import colorsys
 from datetime import datetime
+from tqdm import tqdm
 from modules.detector import PersonDetector
 from modules.tracker import PersonTracker
 from modules.visualizer import Visualizer
@@ -19,6 +20,11 @@ from modules.silhouette_extractor import SilhouetteExtractor
 from modules.gait_recognizer import GaitRecognizer
 from modules.quality_assessor import GaitSequenceQualityAssessor
 from utils.database import PersonEmbeddingDatabase  # Import the database class
+
+def vprint(*args, **kwargs):
+    """Verbose print - only prints if VERBOSE is enabled"""
+    if config.VERBOSE:
+        print(*args, **kwargs)
 
 def get_color_for_id(id_value, saturation=0.8, brightness=0.9):
     """
@@ -93,7 +99,17 @@ def main():
     tracker = PersonTracker(config.TRACKER_CONFIG)
     visualizer = Visualizer(config.VISUALIZATION_CONFIG)
     silhouette_extractor = SilhouetteExtractor(config.SILHOUETTE_CONFIG, config.SEG_MODEL_PATH)
-    gait_recognizer = GaitRecognizer(config.GAIT_MODEL_PATH, config.GAIT_RECOGNIZER_CONFIG)
+    
+    # Initialize gait recognizer with enhanced toggle functionality
+    vprint(f"Initializing GaitRecognizer with {config.GAIT_MODEL_TYPE} model...")
+    gait_recognizer = GaitRecognizer(model_type=config.GAIT_MODEL_TYPE)
+    
+    # Show current model information
+    model_info = gait_recognizer.get_model_info()
+    vprint(f"Gait recognizer info: {model_info}")
+    
+    # Model is loaded based on config.GAIT_MODEL_TYPE setting
+    
     quality_assessor = GaitSequenceQualityAssessor(config.QUALITY_ASSESSOR_CONFIG)
     
     # Initialize person database
@@ -108,25 +124,25 @@ def main():
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
     if os.path.exists(db_path + ".index"):
-        print(f"Loading database from {db_path}.index")
+        vprint(f"Loading database from {db_path}.index")
         try:
             person_db.load_from_disk(db_path)
             # Print detailed information to confirm loading worked
             print(f"Database loaded with {len(person_db.people)} persons")
             if hasattr(person_db, 'index') and hasattr(person_db.index, 'ntotal'):
-                print(f"FAISS index size: {person_db.index.ntotal}")
+                vprint(f"FAISS index size: {person_db.index.ntotal}")
             
             # Test the database with a random embedding to verify search works
             if hasattr(person_db, 'index') and person_db.index.ntotal > 0:
-                print("Testing database search functionality...")
+                vprint("Testing database search functionality...")
                 test_emb = np.random.rand(1, embedding_dimension).astype(np.float32)
                 test_results = person_db.identify_person(test_emb, top_k=5, threshold=0.1)
-                print(f"Test search returned {len(test_results)} results")
+                vprint(f"Test search returned {len(test_results)} results")
             # Print a few entries to verify content
-            print("Database contents:")
+            vprint("Database contents:")
             for i, (pid, info) in enumerate(person_db.people.items()):
                 if i < 3:  # Print first 3 entries for verification
-                    print(f"  Person: {pid}, Name: {info['name']}, Quality: {info['quality']}")
+                    vprint(f"  Person: {pid}, Name: {info['name']}, Quality: {info['quality']}")
                 else:
                     break
                     
@@ -201,6 +217,13 @@ def main():
     
     frame_count = 0
     
+    # Initialize progress bar
+    cap_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    max_frames = min(cap_frames, config.MAX_FRAMES) if cap_frames > 0 else config.MAX_FRAMES
+    
+    if config.SHOW_PROGRESS:
+        pbar = tqdm(total=max_frames, desc="Processing video", unit="frames")
+    
     print("Starting video processing...")
     
     # Process video frames
@@ -210,6 +233,14 @@ def main():
             break
         
         frame_count += 1
+        
+        # Update progress bar
+        if config.SHOW_PROGRESS:
+            pbar.update(1)
+            pbar.set_postfix({
+                'FPS': f'{fps:.1f}' if 'fps' in locals() else '0.0',
+                'Tracks': len(tracks) if 'tracks' in locals() else 0
+            })
         
         # Calculate FPS
         curr_time = time.time()
@@ -255,7 +286,7 @@ def main():
                     quality_result = quality_assessor.assess_sequence_quality(track_silhouettes[track_id])
                     track_quality_history[track_id].append(quality_result)
                     
-                    print(f"Track {track_id}: Quality={quality_result['overall_score']:.3f} "
+                    vprint(f"Track {track_id}: Quality={quality_result['overall_score']:.3f} "
                           f"({quality_result['quality_level']}) - {len(track_silhouettes[track_id])} frames")
                     
                     # Try recognition if quality is acceptable and enough frames
@@ -267,7 +298,7 @@ def main():
 
                         # Person identification logic
                         if embedding is not None:
-                            print(f"Generated embedding for track {track_id} - Shape: {embedding.shape}")
+                            vprint(f"Generated embedding for track {track_id} - Shape: {embedding.shape}")
                             track_embeddings[track_id] = embedding
                             
                             # Get current quality assessment
@@ -279,24 +310,24 @@ def main():
                                 current_person_id = track_identities[track_id]['person_id']
                                 current_person_quality = track_identities[track_id]['quality']
                                 
-                                print(f"Track {track_id} already identified as {track_identities[track_id]['name']}")
+                                vprint(f"Track {track_id} already identified as {track_identities[track_id]['name']}")
                                 if current_quality > current_person_quality:
-                                    print(f"Updating existing identity {current_person_id} with higher quality embedding")
+                                    vprint(f"Updating existing identity {current_person_id} with higher quality embedding")
                                     person_db.update_person(current_person_id, embedding=embedding, quality=current_quality)
                                     track_identities[track_id]['quality'] = current_quality
                             else:
                                 # Debug track identification state
-                                print(f"Track {track_id} needs identity assignment")
+                                vprint(f"Track {track_id} needs identity assignment")
                                 
                                 # New identification needed - search database
                                 match_threshold = config.IDENTIFICATION_THRESHOLD
                                 matches = person_db.identify_person(embedding, top_k=5, threshold=match_threshold)
                                 
-                                print(f"Track {track_id}: Found {len(matches)} potential matches")
+                                vprint(f"Track {track_id}: Found {len(matches)} potential matches")
                                 for i, match in enumerate(matches):
                                     person_id, similarity, name, stored_quality = match
-                                    print(f"  Match {i+1}: {name} (ID: {person_id}), similarity: {similarity:.3f}, quality: {stored_quality:.3f}")
-                                print(f"Track {track_id} match threshold: {config.IDENTIFICATION_THRESHOLD}, best match similarity: {similarity if matches else 'N/A'}")
+                                    vprint(f"  Match {i+1}: {name} (ID: {person_id}), similarity: {similarity:.3f}, quality: {stored_quality:.3f}")
+                                vprint(f"Track {track_id} match threshold: {config.IDENTIFICATION_THRESHOLD}, best match similarity: {similarity if matches else 'N/A'}")
                                 
                                 # Get list of person IDs already assigned to OTHER active tracks
                                 assigned_person_ids = set()
@@ -304,7 +335,7 @@ def main():
                                     if other_id != track_id and other_id in track_identities:
                                         assigned_person_ids.add(track_identities[other_id]['person_id'])
                                 
-                                print(f"Person IDs already assigned to other tracks: {assigned_person_ids}")
+                                vprint(f"Person IDs already assigned to other tracks: {assigned_person_ids}")
                                 
                                 # Find matches that aren't already assigned
                                 available_matches = []
@@ -314,14 +345,14 @@ def main():
                                         available_matches.append(match)
                                 
                                 # DEBUG: Print available matches
-                                print(f"Available matches (not used by other tracks): {len(available_matches)}")
+                                vprint(f"Available matches (not used by other tracks): {len(available_matches)}")
                                 
                                 # Check if we have available matches and use them
                                 if len(available_matches) > 0:
                                     # Use best available match
                                     person_id, similarity, name, stored_quality = available_matches[0]
                                     
-                                    print(f">>> ASSIGNING Track {track_id} to existing database person {name} with similarity {similarity:.3f}")
+                                    vprint(f">>> ASSIGNING Track {track_id} to existing database person {name} with similarity {similarity:.3f}")
                                     
                                     # Assign this identity to the track
                                     track_identities[track_id] = {
@@ -332,14 +363,14 @@ def main():
                                         'is_new': False  # Not new, from database
                                     }
                                     
-                                    print(f"SUCCESS: Track {track_id} identified as existing person {name}")
+                                    vprint(f"SUCCESS: Track {track_id} identified as existing person {name}")
                                     
                                     # Update database if quality improved
                                     if current_quality > stored_quality:
                                         person_db.update_person(person_id, embedding=embedding, quality=current_quality)
                                 else:
                                     # No available matches - create new person
-                                    print(f"No available matches for Track {track_id} - creating new person")
+                                    vprint(f"No available matches for Track {track_id} - creating new person")
                                     
                                     # Use sequential numbering for consistent IDs
                                     new_person_id = f"P{next_person_id:04d}"
@@ -369,9 +400,9 @@ def main():
                                     }
                                     
                                     if matches:
-                                        print(f"Track {track_id}: Created new person {new_person_name} because all matches were already assigned to other tracks")
+                                        vprint(f"Track {track_id}: Created new person {new_person_name} because all matches were already assigned to other tracks")
                                     else:
-                                        print(f"Track {track_id}: Created new person {new_person_name} because no matches found")
+                                        vprint(f"Track {track_id}: Created new person {new_person_name} because no matches found")
         
         # Clean up old tracks that are no longer active
         for track_id in list(track_silhouettes.keys()):
@@ -475,9 +506,14 @@ def main():
         db_text = f"Database: {db_size} persons"
         cv2.putText(vis_frame, db_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
-        # Add FPS and frame info
+        # Add FPS, frame info, and current model
         cv2.putText(vis_frame, f"FPS: {fps:.1f} | Frame: {frame_count}", 
                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Show current gait recognition model
+        model_text = f"Model: {gait_recognizer.current_model_type}"
+        cv2.putText(vis_frame, model_text, 
+                   (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         
         # Display and/or save frame
         if config.SAVE_VIDEO and video_writer is not None:
@@ -499,11 +535,31 @@ def main():
             print("Manually saving person database...")
             person_db.save_to_disk(db_path)
             print(f"Database saved with {len(person_db.people)} persons")
+        elif key == ord('i'):  # Show model info
+            model_info = gait_recognizer.get_model_info()
+            print(f"\nCurrent model info:")
+            for key, value in model_info.items():
+                print(f"  {key}: {value}")
+        elif key == ord('h'):  # Show help
+            print("\n===== Keyboard Controls =====")
+            print("q: Quit")
+            print("s: Save database")
+            print("i: Show model information")
+            print("v: Toggle verbose mode")
+            print("h: Show this help")
+            print("==============================")
+        elif key == ord('v'):  # Toggle verbose mode
+            config.VERBOSE = not config.VERBOSE
+            print(f"Verbose mode: {'ON' if config.VERBOSE else 'OFF'}")
 
     # Final save of the database
     print("Saving person database...")
     person_db.save_to_disk(db_path)
     print(f"Database saved with {len(person_db.people)} persons")
+    
+    # Close progress bar
+    if config.SHOW_PROGRESS:
+        pbar.close()
     
     # Cleanup
     cap.release()
