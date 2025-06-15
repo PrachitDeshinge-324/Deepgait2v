@@ -25,6 +25,9 @@ class SilhouetteExtractor:
         # Silhouette cache: track_id -> deque of (frame_num, silhouette, quality) tuples
         self.silhouette_cache = defaultdict(lambda: deque(maxlen=self.max_cache_size))
         
+        # Previous frame silhouettes for temporal consistency
+        self.prev_silhouettes = {}
+        
         # Best sequences found so far: track_id -> list of silhouettes
         self.best_sequences = {}
         
@@ -85,6 +88,13 @@ class SilhouetteExtractor:
             
             # Generate silhouette
             silhouette = self._segment_person(person_roi)
+            
+            # Apply temporal consistency if we have a previous silhouette
+            if track_id in self.prev_silhouettes:
+                silhouette = self._apply_temporal_consistency(silhouette, self.prev_silhouettes[track_id])
+            
+            # Store for next frame
+            self.prev_silhouettes[track_id] = silhouette.copy()
             
             # Evaluate silhouette quality
             quality_score = self._evaluate_silhouette_quality(silhouette)
@@ -216,10 +226,23 @@ class SilhouetteExtractor:
                 except Exception as e:
                     print(f"Error processing mask: {e}")
         
-        # Post-process: clean up mask
-        kernel = np.ones((5,5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        # Post-process: clean up mask with smaller kernels to preserve details
+        # Use smaller kernels to preserve gait details
+        small_kernel = np.ones((3,3), np.uint8)
+        
+        # Fill small holes first
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, small_kernel)
+        
+        # Remove small noise
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small_kernel)
+        
+        # Apply edge preservation using bilateral filter
+        if mask.max() > 0:
+            # Convert to float for bilateral filter
+            mask_float = mask.astype(np.float32) / 255.0
+            # Apply bilateral filter to preserve edges while smoothing
+            mask_smooth = cv2.bilateralFilter(mask_float, 5, 50, 50)
+            mask = (mask_smooth * 255).astype(np.uint8)
         
         # Final check to ensure binary values
         mask = (mask > 127).astype(np.uint8) * 255
@@ -322,3 +345,40 @@ class SilhouetteExtractor:
         quality_score = min(1.0, quality_score)
         
         return quality_score
+    
+    def _apply_temporal_consistency(self, current_silhouette, prev_silhouette):
+        """
+        Apply temporal consistency to reduce flickering and maintain gait details
+        
+        Args:
+            current_silhouette: Current frame silhouette
+            prev_silhouette: Previous frame silhouette
+            
+        Returns:
+            np.ndarray: Temporally consistent silhouette
+        """
+        if prev_silhouette is None or current_silhouette.shape != prev_silhouette.shape:
+            return current_silhouette
+            
+        # Calculate similarity between current and previous silhouettes
+        intersection = cv2.bitwise_and(current_silhouette, prev_silhouette)
+        union = cv2.bitwise_or(current_silhouette, prev_silhouette)
+        
+        intersection_area = np.sum(intersection > 0)
+        union_area = np.sum(union > 0)
+        
+        if union_area == 0:
+            return current_silhouette
+            
+        iou = intersection_area / union_area
+        
+        # If silhouettes are very similar, apply weighted blending
+        if iou > 0.7:
+            # Weight towards current frame but maintain some temporal stability
+            alpha = 0.8
+            blended = cv2.addWeighted(current_silhouette.astype(np.float32), alpha,
+                                    prev_silhouette.astype(np.float32), 1-alpha, 0)
+            return (blended > 127).astype(np.uint8) * 255
+        else:
+            # If silhouettes are very different, use current frame
+            return current_silhouette

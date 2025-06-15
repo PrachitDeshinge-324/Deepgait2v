@@ -4,27 +4,27 @@ Configuration settings for the tracking application
 
 # Paths
 MODEL_PATH = 'weights/yolo11m.pt'
-SEG_MODEL_PATH = 'weights/yolo11m-seg.pt'
+SEG_MODEL_PATH = 'weights/yolo11l-seg.pt'
 DEEPGAITV2_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"
 GAITBASE_MODEL_PATH = "weights/GaitBase_DA-180000.pt"
 SKELETONGAITPP_MODEL_PATH = "weights/SkeletonGaitPP_30_DA-50000.pt"
-VIDEO_PATH = '../Person_new/input/3c.mp4'
+VIDEO_PATH = '../Person_new/input/3c1.mp4'
 
 # Data storage paths
-DATA_DIR = "data"  # Directory for storing data files like databases
-OUTPUT_VIDEO_PATH = "output/processed_video_3c_SPP.mp4"  # Path for saving output video
+DATA_DIR = "data_Deepgait"  # Directory for storing data files like databases
+OUTPUT_VIDEO_PATH = "output/processed_video_3c1_DG.mp4"  # Path for saving output video
 OUTPUT_FRAMES_DIR = "output/frames"  # Directory for saving individual frames
 
-# Person identification settings
-SIMILARITY_THRESHOLD = 0.3
-IDENTIFICATION_THRESHOLD = 0.15  # Similarity threshold for positive identification
+# Person identification settings - Enhanced for better accuracy
+SIMILARITY_THRESHOLD = 0.05  # Very permissive threshold for real-world CCTV
+IDENTIFICATION_THRESHOLD = 0.05  # Allow matching even with poor quality embeddings (fixed cosine similarity issue)
 SPATIAL_CONFLICT_THRESHOLD = 150  # Pixel distance threshold for spatial conflict detection
 
 # Processing limits
-MAX_FRAMES = 6000
+MAX_FRAMES = 900
 SAVE_VIDEO = True  # Whether to save processed video
 SAVE_FRAMES = False  # Whether to save individual frames
-SHOW_DISPLAY = True  # Whether to show display window
+SHOW_DISPLAY = False  # Whether to show display window
 VERBOSE = False  # Whether to show detailed processing logs
 SHOW_PROGRESS = True  # Whether to show progress bar
 
@@ -46,18 +46,30 @@ VISUALIZATION_CONFIG = {
     'fps_font_scale': 0.8
 }
 
-# Silhouette extraction settings
+# Silhouette extraction settings - Enhanced for better accuracy
 SILHOUETTE_CONFIG = {
-    'min_track_frames': 15,        # Reduced from 20
-    'confidence_threshold': 0.7,   # Reduced from 0.8
-    'min_quality_score': 0.6,      # Reduced from 0.7
+    'min_track_frames': 12,        # Reduced from 15 for more permissive tracking
+    'confidence_threshold': 0.6,   # Reduced for CCTV footage
+    'min_quality_score': 0.3,      # More permissive quality threshold  
     'resolution': (64, 44),
     'window_size': 25,             # Reduced from 30 for easier sequence finding
-    'max_cache_size': 50
+    'max_cache_size': 150,         # Increased for better temporal consistency
+    
+    # Enhanced morphological operation settings
+    'small_kernel_size': 3,        # Reduced from 5 to preserve details
+    'use_bilateral_filter': True,  # Enable edge preservation
+    'bilateral_d': 5,              # Bilateral filter neighborhood
+    'bilateral_sigma_color': 50,   # Bilateral filter color sigma
+    'bilateral_sigma_space': 50,   # Bilateral filter space sigma
+    
+    # Temporal consistency settings
+    'temporal_consistency_enabled': True,
+    'temporal_iou_threshold': 0.7, # IoU threshold for temporal blending
+    'temporal_blend_alpha': 0.8,   # Weight for current frame vs previous
 }
 
 # Model Selection and Configuration
-GAIT_MODEL_TYPE = "SkeletonGaitPP"  # Options: "DeepGaitV2", "GaitBase", or "SkeletonGaitPP" - Change this to switch models
+GAIT_MODEL_TYPE = "DeepGaitV2"  # Options: "DeepGaitV2", "GaitBase", or "SkeletonGaitPP" - Change this to switch models
 
 # DeepGaitV2 Configuration
 # This is a CNN-based model with excellent performance on various datasets

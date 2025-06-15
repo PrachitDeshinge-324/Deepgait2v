@@ -56,11 +56,31 @@ class GaitSequenceQualityAssessor:
             return self._create_quality_result(0.0, "Empty sequence", {})
         
         try:
+            # Early stopping for clearly poor sequences
+            if len(silhouettes) < self.config['min_sequence_length'] // 2:
+                return self._create_quality_result(0.0, "Too short for analysis", {})
+            
+            # Quick quality check - if too many empty silhouettes, stop early
+            non_empty_count = sum(1 for s in silhouettes[:10] if s is not None and s.size > 0 and np.sum(s > 0) > 100)
+            if non_empty_count < len(silhouettes[:10]) * 0.3:  # Less than 30% valid silhouettes
+                return self._create_quality_result(0.0, "Too few valid silhouettes", {})
+            
             # 1. Sequence Length Assessment
             length_score, length_metrics = self._assess_sequence_length(silhouettes)
             
+            # Early stopping if length score is too low
+            if length_score < 0.2:
+                return self._create_quality_result(length_score * 0.5, "Inadequate sequence length", {'length': length_metrics})
+            
             # 2. Silhouette Quality Assessment
             silhouette_score, silhouette_metrics = self._assess_silhouette_quality(silhouettes)
+            
+            # Early stopping if silhouette quality is too low
+            if silhouette_score < 0.1:
+                return self._create_quality_result(silhouette_score * 0.5, "Poor silhouette quality", {
+                    'length': length_metrics,
+                    'silhouette': silhouette_metrics
+                })
             
             # 3. Motion Quality Assessment
             motion_score, motion_metrics = self._assess_motion_quality(silhouettes)
@@ -77,15 +97,15 @@ class GaitSequenceQualityAssessor:
             # 7. Sharpness Assessment
             sharpness_score, sharpness_metrics = self._assess_sharpness(silhouettes)
             
-            # Calculate overall quality score with weighted components
+            # Calculate overall quality score with weighted components optimized for gait
             weights = {
-                'length': 0.15,
-                'silhouette': 0.20,
-                'motion': 0.15,
-                'temporal': 0.15,
-                'completeness': 0.15,
-                'pose': 0.10,
-                'sharpness': 0.10
+                'length': 0.10,        # Reduced from 0.15 - less important after minimum threshold
+                'silhouette': 0.15,    # Reduced from 0.20 - basic requirement
+                'motion': 0.25,        # Increased from 0.15 - critical for gait
+                'temporal': 0.15,      # Maintained - important for consistency  
+                'completeness': 0.15,  # Maintained - important for reliability
+                'pose': 0.20,          # Increased from 0.10 - critical for gait analysis
+                'sharpness': 0.05      # Reduced from 0.10 - less critical for gait
             }
             
             overall_score = (
