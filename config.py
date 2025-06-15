@@ -16,9 +16,17 @@ OUTPUT_VIDEO_PATH = "output/processed_video_3c1_DG.mp4"  # Path for saving outpu
 OUTPUT_FRAMES_DIR = "output/frames"  # Directory for saving individual frames
 
 # Person identification settings - Enhanced for better accuracy
+# Fixed cosine similarity calculation and thresholds for real-world CCTV scenarios
 SIMILARITY_THRESHOLD = 0.05  # Very permissive threshold for real-world CCTV
 IDENTIFICATION_THRESHOLD = 0.05  # Allow matching even with poor quality embeddings (fixed cosine similarity issue)
 SPATIAL_CONFLICT_THRESHOLD = 150  # Pixel distance threshold for spatial conflict detection
+
+# Sampling method configuration
+IDENTIFICATION_METHOD = "nucleus"  # Options: "top_k" or "nucleus"
+NUCLEUS_TOP_P = 0.85  # For nucleus sampling: cumulative probability mass (0.8-0.95 recommended)
+NUCLEUS_MIN_CANDIDATES = 1  # Minimum candidates to return
+NUCLEUS_MAX_CANDIDATES = 5  # Maximum candidates to return
+TOP_K_CANDIDATES = 5  # For top-k sampling: fixed number of candidates
 
 # Processing limits
 MAX_FRAMES = 900

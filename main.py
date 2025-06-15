@@ -319,9 +319,22 @@ def main():
                                 # Debug track identification state
                                 vprint(f"Track {track_id} needs identity assignment")
                                 
-                                # New identification needed - search database
+                                # New identification needed - search database using configured method
                                 match_threshold = config.IDENTIFICATION_THRESHOLD
-                                matches = person_db.identify_person(embedding, top_k=5, threshold=match_threshold)
+                                
+                                if config.IDENTIFICATION_METHOD == "nucleus":
+                                    matches = person_db.identify_person_adaptive(
+                                        embedding, 
+                                        method='nucleus',
+                                        top_p=config.NUCLEUS_TOP_P,
+                                        min_candidates=config.NUCLEUS_MIN_CANDIDATES,
+                                        max_candidates=config.NUCLEUS_MAX_CANDIDATES,
+                                        threshold=match_threshold
+                                    )
+                                    vprint(f"Track {track_id}: Using nucleus sampling (top_p={config.NUCLEUS_TOP_P})")
+                                else:
+                                    matches = person_db.identify_person(embedding, top_k=config.TOP_K_CANDIDATES, threshold=match_threshold)
+                                    vprint(f"Track {track_id}: Using top-k sampling (k={config.TOP_K_CANDIDATES})")
                                 
                                 vprint(f"Track {track_id}: Found {len(matches)} potential matches")
                                 for i, match in enumerate(matches):
@@ -510,10 +523,18 @@ def main():
         cv2.putText(vis_frame, f"FPS: {fps:.1f} | Frame: {frame_count}", 
                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
-        # Show current gait recognition model
+        # Show current gait recognition model and sampling method
         model_text = f"Model: {gait_recognizer.current_model_type}"
         cv2.putText(vis_frame, model_text, 
                    (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        
+        # Show sampling method
+        if config.IDENTIFICATION_METHOD == "nucleus":
+            sampling_text = f"Sampling: Nucleus (p={config.NUCLEUS_TOP_P})"
+        else:
+            sampling_text = f"Sampling: Top-K (k={config.TOP_K_CANDIDATES})"
+        cv2.putText(vis_frame, sampling_text, 
+                   (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         
         # Display and/or save frame
         if config.SAVE_VIDEO and video_writer is not None:

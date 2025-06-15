@@ -10,7 +10,7 @@ class PersonEmbeddingDatabase:
         """Initialize person database with FAISS index"""
         self.people = {}  # Maps ID to person info (name, quality scores, etc)
         self.id_to_index = {}  # Maps person IDs to FAISS indices
-        self.index_to_id = []  # Maps FAISS indices to person IDs
+        self.index_to_id = []  # Maps FAISS indices to person ID
         self.dimension = dimension
         self.use_cosine = use_cosine  # Changed from use_l2 to use_cosine for clarity
         self.embeddings = {}
@@ -248,7 +248,7 @@ class PersonEmbeddingDatabase:
                 
                 # Enhanced similarity calculation
                 if self.use_cosine:
-                    # For FAISS IndexFlatIP, distances are actually dot products (cosine similarity)
+                    # For FAISS IndexFlatIP, distances are dot products (cosine similarity)
                     # For normalized vectors, this is the cosine similarity directly
                     raw_distance = float(distances[0][i])
                     
@@ -290,6 +290,153 @@ class PersonEmbeddingDatabase:
         self._cache_search_results(cache_key, final_results)
         
         return final_results
+
+    def identify_person_nucleus(self, embedding, top_p=0.9, min_candidates=1, max_candidates=10, threshold=None):
+        """
+        Enhanced person identification using nucleus (top-p) sampling instead of top-k
+        
+        Args:
+            embedding: Input embedding for identification
+            top_p: Cumulative probability mass to include (e.g., 0.9 = top 90% probability mass)
+            min_candidates: Minimum number of candidates to return
+            max_candidates: Maximum number of candidates to return
+            threshold: Similarity threshold (if None, uses adaptive threshold)
+            
+        Returns:
+            List of tuples: (person_id, similarity, name, quality)
+        """
+        # Check if database is empty
+        if len(self.index_to_id) == 0:
+            print("Warning: Database is empty, no matches possible")
+            return []
+            
+        # Reshape embedding for FAISS
+        flat_emb = embedding.reshape(1, -1).astype(np.float32)
+        
+        # Generate cache key for nucleus sampling
+        cache_key = f"nucleus_{self._hash_embedding(flat_emb)}_{top_p}_{threshold}"
+        cached_results = self._get_cached_search_results(cache_key)
+        if cached_results is not None:
+            return cached_results
+        
+        # Normalize for cosine similarity
+        if self.use_cosine:
+            faiss.normalize_L2(flat_emb)
+            
+        # Search all candidates for nucleus sampling (search more candidates for better distribution)
+        search_k = min(len(self.index_to_id), 50)  # Search more candidates for better distribution
+        distances, indices = self.index.search(flat_emb, search_k)
+        
+        # Calculate adaptive threshold if not provided
+        if threshold is None:
+            threshold = self._calculate_adaptive_threshold(distances[0])
+        
+        print(f"Nucleus sampling - Raw FAISS results: {distances[0][:5]}")
+        print(f"Using threshold: {threshold:.3f}, top_p: {top_p}")
+        
+        # Convert distances to similarity scores and normalize
+        similarities = []
+        valid_candidates = []
+        
+        for i, idx in enumerate(indices[0]):
+            if idx != -1:  # Valid index
+                person_id = self.index_to_id[idx]
+                
+                # Enhanced similarity calculation (same as identify_person)
+                if self.use_cosine:
+                    raw_distance = float(distances[0][i])
+                    if raw_distance >= -1.0 and raw_distance <= 1.0:
+                        similarity = float((raw_distance + 1.0) / 2.0)
+                    else:
+                        clipped = max(-1.0, min(1.0, raw_distance))
+                        similarity = float((clipped + 1.0) / 2.0)
+                else:
+                    # L2 distance: convert to similarity with adaptive scaling
+                    distance = distances[0][i]
+                    normalized_dist = distance / np.sqrt(self.dimension)
+                    similarity = float(np.exp(-0.5 * normalized_dist**2))
+                
+                # Only include results above threshold
+                if similarity >= threshold:
+                    person_quality = self.people[person_id].get('quality', 0.5)
+                    quality_boost = 0.1 * np.log(1 + person_quality)
+                    adjusted_similarity = min(1.0, similarity + quality_boost)
+                    
+                    similarities.append(adjusted_similarity)
+                    valid_candidates.append((
+                        person_id,
+                        adjusted_similarity,
+                        self.people[person_id]['name'],
+                        person_quality
+                    ))
+        
+        if not valid_candidates:
+            return []
+        
+        # Sort by similarity (highest first)
+        valid_candidates.sort(key=lambda x: x[1], reverse=True)
+        similarities = [x[1] for x in valid_candidates]
+        
+        # Normalize similarities to create probability distribution
+        # Use softmax with temperature for better distribution
+        temperature = 0.5  # Lower temperature = more peaked distribution
+        similarities_array = np.array(similarities)
+        
+        # Apply temperature scaling
+        scaled_similarities = similarities_array / temperature
+        
+        # Compute softmax probabilities
+        exp_similarities = np.exp(scaled_similarities - np.max(scaled_similarities))  # Numerical stability
+        probabilities = exp_similarities / np.sum(exp_similarities)
+        
+        # Nucleus (top-p) sampling: find candidates that sum to top_p probability mass
+        cumulative_probs = np.cumsum(probabilities)
+        
+        # Find the cutoff index where cumulative probability exceeds top_p
+        nucleus_cutoff = np.searchsorted(cumulative_probs, top_p) + 1
+        nucleus_cutoff = max(min_candidates, min(nucleus_cutoff, max_candidates, len(valid_candidates)))
+        
+        # Select nucleus candidates
+        nucleus_candidates = valid_candidates[:nucleus_cutoff]
+        
+        print(f"Nucleus sampling selected {len(nucleus_candidates)} candidates (top_p={top_p})")
+        print(f"Probability distribution: {probabilities[:nucleus_cutoff]}")
+        
+        # Cache the results
+        self._cache_search_results(cache_key, nucleus_candidates)
+        
+        return nucleus_candidates
+
+    def identify_person_adaptive(self, embedding, method='nucleus', **kwargs):
+        """
+        Adaptive person identification that can use either top-k or nucleus sampling
+        
+        Args:
+            embedding: Input embedding for identification
+            method: 'top_k' or 'nucleus'
+            **kwargs: Arguments for the chosen method
+            
+        Returns:
+            List of tuples: (person_id, similarity, name, quality)
+        """
+        if method == 'nucleus':
+            # Default nucleus parameters if not provided
+            top_p = kwargs.get('top_p', 0.9)
+            min_candidates = kwargs.get('min_candidates', 1)
+            max_candidates = kwargs.get('max_candidates', 10)
+            threshold = kwargs.get('threshold', None)
+            
+            return self.identify_person_nucleus(
+                embedding, top_p=top_p, 
+                min_candidates=min_candidates, 
+                max_candidates=max_candidates, 
+                threshold=threshold
+            )
+        else:  # top_k
+            top_k = kwargs.get('top_k', 1)
+            threshold = kwargs.get('threshold', None)
+            
+            return self.identify_person(embedding, top_k=top_k, threshold=threshold)
     
     
     def _calculate_adaptive_threshold(self, distances):
