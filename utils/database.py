@@ -291,9 +291,10 @@ class PersonEmbeddingDatabase:
         
         return final_results
 
-    def identify_person_nucleus(self, embedding, top_p=0.9, min_candidates=1, max_candidates=10, threshold=None):
+    def identify_person_nucleus(self, embedding, top_p=0.9, min_candidates=1, max_candidates=10, threshold=None, 
+                               close_sim_threshold=0.05, amplification_factor=20.0, quality_weight=0.5, enhanced_ranking=True):
         """
-        Enhanced person identification using nucleus (top-p) sampling instead of top-k
+        Enhanced person identification using nucleus (top-p) sampling with improved handling of close similarities
         
         Args:
             embedding: Input embedding for identification
@@ -301,6 +302,10 @@ class PersonEmbeddingDatabase:
             min_candidates: Minimum number of candidates to return
             max_candidates: Maximum number of candidates to return
             threshold: Similarity threshold (if None, uses adaptive threshold)
+            close_sim_threshold: Range below which similarities are considered "close"
+            amplification_factor: Factor to amplify small differences in close similarities
+            quality_weight: Weight for quality-based tie breaking
+            enhanced_ranking: Whether to use multi-factor ranking for close similarities
             
         Returns:
             List of tuples: (person_id, similarity, name, quality)
@@ -342,30 +347,31 @@ class PersonEmbeddingDatabase:
             if idx != -1:  # Valid index
                 person_id = self.index_to_id[idx]
                 
-                # Enhanced similarity calculation (same as identify_person)
+                # Enhanced similarity calculation for nucleus sampling
                 if self.use_cosine:
                     raw_distance = float(distances[0][i])
-                    if raw_distance >= -1.0 and raw_distance <= 1.0:
-                        similarity = float((raw_distance + 1.0) / 2.0)
-                    else:
-                        clipped = max(-1.0, min(1.0, raw_distance))
-                        similarity = float((clipped + 1.0) / 2.0)
+                    # Keep raw cosine similarity for better discrimination
+                    # Don't map to [0,1] range here - preserve original values
+                    raw_similarity = raw_distance
+                    
+                    # For threshold comparison, still use [0,1] mapping
+                    threshold_similarity = (raw_distance + 1.0) / 2.0 if raw_distance >= -1.0 and raw_distance <= 1.0 else 0.5
                 else:
-                    # L2 distance: convert to similarity with adaptive scaling
+                    # L2 distance: convert to similarity
                     distance = distances[0][i]
                     normalized_dist = distance / np.sqrt(self.dimension)
-                    similarity = float(np.exp(-0.5 * normalized_dist**2))
+                    raw_similarity = float(np.exp(-0.5 * normalized_dist**2))
+                    threshold_similarity = raw_similarity
                 
-                # Only include results above threshold
-                if similarity >= threshold:
+                # Only include results above threshold (using threshold-comparable similarity)
+                if threshold_similarity >= threshold:
                     person_quality = self.people[person_id].get('quality', 0.5)
-                    quality_boost = 0.1 * np.log(1 + person_quality)
-                    adjusted_similarity = min(1.0, similarity + quality_boost)
                     
-                    similarities.append(adjusted_similarity)
+                    # Store raw similarity for better discrimination
+                    similarities.append(raw_similarity)
                     valid_candidates.append((
                         person_id,
-                        adjusted_similarity,
+                        raw_similarity,  # Use raw similarity, not adjusted
                         self.people[person_id]['name'],
                         person_quality
                     ))
@@ -377,35 +383,131 @@ class PersonEmbeddingDatabase:
         valid_candidates.sort(key=lambda x: x[1], reverse=True)
         similarities = [x[1] for x in valid_candidates]
         
-        # Normalize similarities to create probability distribution
-        # Use softmax with temperature for better distribution
-        temperature = 0.5  # Lower temperature = more peaked distribution
+        # Enhanced probability distribution for close similarity scores
         similarities_array = np.array(similarities)
         
-        # Apply temperature scaling
-        scaled_similarities = similarities_array / temperature
+        # Detect if similarities are too close (variance is low)
+        sim_variance = np.var(similarities_array)
+        sim_range = np.max(similarities_array) - np.min(similarities_array)
         
-        # Compute softmax probabilities
-        exp_similarities = np.exp(scaled_similarities - np.max(scaled_similarities))  # Numerical stability
-        probabilities = exp_similarities / np.sum(exp_similarities)
+        print(f"Similarity variance: {sim_variance:.6f}, range: {sim_range:.6f}")
+        print(f"Close similarity detection: variance < 0.0001? {sim_variance < 0.0001}, range < {close_sim_threshold}? {sim_range < close_sim_threshold}")
         
-        # Nucleus (top-p) sampling: find candidates that sum to top_p probability mass
+        # Enhanced normalization strategies for close similarities
+        if sim_variance < 0.001 or sim_range < close_sim_threshold:  # Relaxed threshold for close similarities
+            print("Close similarities detected - using enhanced discrimination")
+            
+            # Strategy 1: Use exponential amplification of differences
+            amplified_similarities = np.exp(amplification_factor * (similarities_array - np.min(similarities_array)))
+            
+            # Strategy 2: Add quality-based tie-breaking
+            quality_scores = np.array([candidate[3] for candidate in valid_candidates])  # Extract quality scores
+            quality_weights = 1.0 + quality_weight * quality_scores  # Boost based on quality
+            
+            # Combine amplified similarities with quality weights
+            combined_scores = amplified_similarities * quality_weights
+            
+            # Strategy 3: Add small random noise for tie-breaking (reproducible)
+            np.random.seed(hash(str(similarities_array.tobytes())) % 2**32)  # Reproducible randomness
+            noise = np.random.normal(0, 0.01, len(combined_scores))
+            final_scores = combined_scores + noise
+            
+            # Normalize to probabilities
+            probabilities = final_scores / np.sum(final_scores)
+            
+        else:  # Normal case - similarities are well separated
+            print("Well-separated similarities - using standard softmax")
+            
+            # Adaptive temperature based on similarity spread
+            if sim_range > 0.1:
+                temperature = 1.0  # Standard temperature for well-separated values
+            else:
+                temperature = 2.0  # Higher temperature for moderately close values
+            
+            # Apply temperature scaling
+            scaled_similarities = similarities_array / temperature
+            
+            # Compute softmax probabilities
+            exp_similarities = np.exp(scaled_similarities - np.max(scaled_similarities))
+            probabilities = exp_similarities / np.sum(exp_similarities)
+        
+        # Enhanced nucleus sampling with adaptive cutoff
         cumulative_probs = np.cumsum(probabilities)
         
-        # Find the cutoff index where cumulative probability exceeds top_p
-        nucleus_cutoff = np.searchsorted(cumulative_probs, top_p) + 1
+        # Dynamic top_p adjustment based on distribution flatness
+        effective_top_p = top_p
+        if sim_variance < 0.0001:  # Very flat distribution
+            effective_top_p = min(0.95, top_p + 0.1)  # Be more inclusive
+            print(f"Adjusted top_p from {top_p} to {effective_top_p} for flat distribution")
+        
+        # Find the cutoff index where cumulative probability exceeds effective_top_p
+        nucleus_cutoff = np.searchsorted(cumulative_probs, effective_top_p) + 1
         nucleus_cutoff = max(min_candidates, min(nucleus_cutoff, max_candidates, len(valid_candidates)))
         
         # Select nucleus candidates
         nucleus_candidates = valid_candidates[:nucleus_cutoff]
         
-        print(f"Nucleus sampling selected {len(nucleus_candidates)} candidates (top_p={top_p})")
-        print(f"Probability distribution: {probabilities[:nucleus_cutoff]}")
+        # Convert raw similarities back to [0,1] range for display consistency
+        display_candidates = []
+        for person_id, raw_sim, name, quality in nucleus_candidates:
+            if self.use_cosine:
+                # Map cosine similarity [-1,1] to [0,1] for display
+                display_sim = (raw_sim + 1.0) / 2.0 if raw_sim >= -1.0 else 0.5
+                
+                # Apply quality boost for display
+                person_quality = self.people[person_id].get('quality', 0.5)
+                quality_boost = 0.1 * np.log(1 + person_quality)
+                display_sim = min(1.0, display_sim + quality_boost)
+            else:
+                display_sim = raw_sim
+                
+            display_candidates.append((person_id, display_sim, name, quality))
+        
+        print(f"Nucleus sampling selected {len(display_candidates)} candidates (effective_top_p={effective_top_p:.3f})")
+        print(f"Raw similarity scores: {[f'{c[1]:.6f}' for c in nucleus_candidates[:5]]}")
+        print(f"Display similarity scores: {[f'{c[1]:.6f}' for c in display_candidates[:5]]}")
+        print(f"Probability distribution: {[f'{p:.4f}' for p in probabilities[:nucleus_cutoff]]}")
+        
+        # Additional ranking based on multiple factors for close similarities
+        if enhanced_ranking and (sim_variance < 0.001 or sim_range < close_sim_threshold) and len(display_candidates) > 1:
+            print("Applying secondary ranking for close similarities")
+            
+            # Secondary ranking factors
+            enhanced_candidates = []
+            for i, (person_id, display_sim, name, quality) in enumerate(display_candidates):
+                # Factor 1: Original similarity (40% weight)
+                sim_score = display_sim * 0.4
+                
+                # Factor 2: Quality score (30% weight)  
+                quality_score = quality * 0.3
+                
+                # Factor 3: Probability from distribution (20% weight)
+                prob_score = probabilities[i] * 0.2
+                
+                # Factor 4: Recency/frequency bonus (10% weight)
+                person_data = self.people[person_id]
+                embedding_count = len(person_data.get('embeddings', []))
+                recency_score = min(1.0, embedding_count / 10.0) * 0.1
+                
+                # Combine all factors
+                final_score = sim_score + quality_score + prob_score + recency_score
+                
+                enhanced_candidates.append((
+                    person_id, display_sim, name, quality, final_score
+                ))
+            
+            # Re-sort by enhanced score
+            enhanced_candidates.sort(key=lambda x: x[4], reverse=True)
+            
+            # Convert back to original format
+            display_candidates = [(pid, sim, name, qual) for pid, sim, name, qual, _ in enhanced_candidates]
+            
+            print(f"Enhanced ranking applied - final order: {[c[2] for c in display_candidates[:3]]}")
         
         # Cache the results
-        self._cache_search_results(cache_key, nucleus_candidates)
+        self._cache_search_results(cache_key, display_candidates)
         
-        return nucleus_candidates
+        return display_candidates
 
     def identify_person_adaptive(self, embedding, method='nucleus', **kwargs):
         """
@@ -425,12 +527,20 @@ class PersonEmbeddingDatabase:
             min_candidates = kwargs.get('min_candidates', 1)
             max_candidates = kwargs.get('max_candidates', 10)
             threshold = kwargs.get('threshold', None)
+            close_sim_threshold = kwargs.get('close_sim_threshold', 0.05)
+            amplification_factor = kwargs.get('amplification_factor', 20.0)
+            quality_weight = kwargs.get('quality_weight', 0.5)
+            enhanced_ranking = kwargs.get('enhanced_ranking', True)
             
             return self.identify_person_nucleus(
                 embedding, top_p=top_p, 
                 min_candidates=min_candidates, 
                 max_candidates=max_candidates, 
-                threshold=threshold
+                threshold=threshold,
+                close_sim_threshold=close_sim_threshold,
+                amplification_factor=amplification_factor,
+                quality_weight=quality_weight,
+                enhanced_ranking=enhanced_ranking
             )
         else:  # top_k
             top_k = kwargs.get('top_k', 1)

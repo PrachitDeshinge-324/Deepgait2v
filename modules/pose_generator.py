@@ -54,12 +54,12 @@ class PoseHeatmapGenerator:
         # Extract simple keypoints from silhouette
         keypoints = self._extract_keypoints_from_contour(main_contour, silhouette)
         
-        # Generate heatmaps for keypoints
+        # Generate heatmaps for keypoints with higher intensity
         for i, (x, y) in enumerate(keypoints):
             if x >= 0 and y >= 0:  # Valid keypoint
                 channel = i % 2  # Distribute keypoints across 2 channels
                 pose_heatmap[channel] = self._add_gaussian_at_point(
-                    pose_heatmap[channel], x, y, self.sigma
+                    pose_heatmap[channel], x, y, self.sigma, intensity=0.8  # Increased intensity
                 )
         
         return pose_heatmap
@@ -101,17 +101,17 @@ class PoseHeatmapGenerator:
         
         return keypoints
     
-    def _add_gaussian_at_point(self, heatmap, x, y, sigma):
+    def _add_gaussian_at_point(self, heatmap, x, y, sigma, intensity=0.8):
         """
-        Add a Gaussian blob at the specified point
+        Add a Gaussian blob at the specified point with configurable intensity
         """
         h, w = heatmap.shape
         
         # Create coordinate grids
         x_grid, y_grid = np.meshgrid(np.arange(w), np.arange(h))
         
-        # Calculate Gaussian
-        gaussian = np.exp(-((x_grid - x)**2 + (y_grid - y)**2) / (2 * sigma**2))
+        # Calculate Gaussian with higher intensity
+        gaussian = intensity * np.exp(-((x_grid - x)**2 + (y_grid - y)**2) / (2 * sigma**2))
         
         # Add to heatmap (use maximum to avoid overwriting)
         heatmap = np.maximum(heatmap, gaussian)

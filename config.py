@@ -5,21 +5,30 @@ Configuration settings for the tracking application
 # Paths
 MODEL_PATH = 'weights/yolo11m.pt'
 SEG_MODEL_PATH = 'weights/yolo11l-seg.pt'
+# Model Selection and Configuration
+GAIT_MODEL_TYPE = "DeepGaitV2"  # Start with best-performing model for your CCTV setup
 DEEPGAITV2_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"
 GAITBASE_MODEL_PATH = "weights/GaitBase_DA-180000.pt"
 SKELETONGAITPP_MODEL_PATH = "weights/SkeletonGaitPP_30_DA-50000.pt"
-VIDEO_PATH = '../Person_new/input/3c1.mp4'
+VIDEO_DIR = '../Person_new/input'
+VIDEO_NAME = '3c.mp4'
+VIDEO_PATH = f"{VIDEO_DIR}/{VIDEO_NAME}"  # Path to the input video file
 
 # Data storage paths
-DATA_DIR = "data_Deepgait"  # Directory for storing data files like databases
-OUTPUT_VIDEO_PATH = "output/processed_video_3c1_DG.mp4"  # Path for saving output video
+DATA_DIR = f"data_{GAIT_MODEL_TYPE}"  # Directory for storing data files like databases
+OUTPUT_VIDEO_PATH = f"output/processed_video_{VIDEO_NAME}_{GAIT_MODEL_TYPE}.mp4"  # Path for saving output video
 OUTPUT_FRAMES_DIR = "output/frames"  # Directory for saving individual frames
 
-# Person identification settings - Enhanced for better accuracy
-# Fixed cosine similarity calculation and thresholds for real-world CCTV scenarios
-SIMILARITY_THRESHOLD = 0.05  # Very permissive threshold for real-world CCTV
-IDENTIFICATION_THRESHOLD = 0.05  # Allow matching even with poor quality embeddings (fixed cosine similarity issue)
+# Person identification settings - Basic optimization for CCTV
+# Start with more permissive settings that work well for your DeepGaitV2
+SIMILARITY_THRESHOLD = 0.20  # Slightly higher for better discrimination
+IDENTIFICATION_THRESHOLD = 0.15  # Balanced threshold for reliability
 SPATIAL_CONFLICT_THRESHOLD = 150  # Pixel distance threshold for spatial conflict detection
+
+# CCTV-specific quality settings - Basic level
+MIN_SEQUENCE_LENGTH = 15  # Reasonable minimum for CCTV
+MIN_QUALITY_THRESHOLD = 0.40  # More permissive for CCTV quality
+HIGH_QUALITY_THRESHOLD = 0.60  # Realistic for CCTV expectations
 
 # Sampling method configuration
 IDENTIFICATION_METHOD = "nucleus"  # Options: "top_k" or "nucleus"
@@ -28,12 +37,23 @@ NUCLEUS_MIN_CANDIDATES = 1  # Minimum candidates to return
 NUCLEUS_MAX_CANDIDATES = 5  # Maximum candidates to return
 TOP_K_CANDIDATES = 5  # For top-k sampling: fixed number of candidates
 
+# Advanced nucleus sampling parameters for close similarities
+NUCLEUS_CLOSE_SIM_THRESHOLD = 0.08  # Increased for CCTV scenarios with similar poses
+NUCLEUS_AMPLIFICATION_FACTOR = 35.0  # Higher amplification for better discrimination
+NUCLEUS_QUALITY_WEIGHT = 0.8  # Increased quality weighting for CCTV scenarios
+NUCLEUS_ENHANCED_RANKING = True  # Enable multi-factor ranking for close similarities
+
+# CCTV-specific enhancement parameters
+TEMPORAL_CONSISTENCY_WEIGHT = 0.7  # Higher weight for temporal consistency
+ENSEMBLE_IDENTIFICATION = True  # Enable ensemble methods for better accuracy
+MULTI_SEQUENCE_MATCHING = True  # Use multiple sequences per person for matching
+
 # Processing limits
-MAX_FRAMES = 900
+MAX_FRAMES = 600  # Increased for better gallery building
 SAVE_VIDEO = True  # Whether to save processed video
 SAVE_FRAMES = False  # Whether to save individual frames
 SHOW_DISPLAY = False  # Whether to show display window
-VERBOSE = False  # Whether to show detailed processing logs
+VERBOSE = False  # Enable detailed logs for debugging
 SHOW_PROGRESS = True  # Whether to show progress bar
 
 # Tracker settings
@@ -75,9 +95,6 @@ SILHOUETTE_CONFIG = {
     'temporal_iou_threshold': 0.7, # IoU threshold for temporal blending
     'temporal_blend_alpha': 0.8,   # Weight for current frame vs previous
 }
-
-# Model Selection and Configuration
-GAIT_MODEL_TYPE = "DeepGaitV2"  # Options: "DeepGaitV2", "GaitBase", or "SkeletonGaitPP" - Change this to switch models
 
 # DeepGaitV2 Configuration
 # This is a CNN-based model with excellent performance on various datasets
@@ -130,6 +147,16 @@ SKELETONGAITPP_CONFIG = {
         'class_num': 3000            # Number of identities in training set - adjust based on your trained model
     },
     'use_emb2': False                # Whether to use second embedding layer output for inference
+}
+
+# SkeletonGaitPP Multimodal Preprocessing Configuration
+SKELETONGAITPP_MULTIMODAL_PREPROCESSING = {
+    'enabled': True,
+    'pose_intensity': 0.8,           # Increased intensity for pose heatmaps
+    'pose_sigma': 2.0,               # Gaussian sigma for pose keypoints
+    'quality_threshold': 0.35,       # Lower threshold for synthetic pose data
+    'temporal_consistency': True,    # Enable temporal consistency for poses
+    'pose_amplification': 1.5,       # Amplify pose signals for better detection
 }
 
 # Get the appropriate config and model path based on selected model type

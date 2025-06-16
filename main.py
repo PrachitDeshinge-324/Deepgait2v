@@ -1,5 +1,5 @@
 """
-Main entry point for person detection, tracking, and gait recognition with quality control
+Main entry point for person detection, tracking, and gait recognition with enhanced CCTV accuracy
 """
 
 import cv2
@@ -19,6 +19,7 @@ from modules.visualizer import Visualizer
 from modules.silhouette_extractor import SilhouetteExtractor
 from modules.gait_recognizer import GaitRecognizer
 from modules.quality_assessor import GaitSequenceQualityAssessor
+from modules.enhanced_identifier import CCTVGaitIdentifier  # Import enhanced identifier
 from utils.database import PersonEmbeddingDatabase  # Import the database class
 
 def vprint(*args, **kwargs):
@@ -100,21 +101,25 @@ def main():
     visualizer = Visualizer(config.VISUALIZATION_CONFIG)
     silhouette_extractor = SilhouetteExtractor(config.SILHOUETTE_CONFIG, config.SEG_MODEL_PATH)
     
-    # Initialize gait recognizer with enhanced toggle functionality
-    vprint(f"Initializing GaitRecognizer with {config.GAIT_MODEL_TYPE} model...")
-    gait_recognizer = GaitRecognizer(model_type=config.GAIT_MODEL_TYPE)
+    # Initialize gait recognizer with enhanced model selection
+    selected_model = getattr(config, 'GAIT_MODEL_TYPE', 'DeepGaitV2')  # Default to DeepGaitV2 if not set
+    vprint(f"Initializing GaitRecognizer with {selected_model} model...")
+    gait_recognizer = GaitRecognizer(model_type=selected_model)
     
     # Show current model information
     model_info = gait_recognizer.get_model_info()
     vprint(f"Gait recognizer info: {model_info}")
     
-    # Model is loaded based on config.GAIT_MODEL_TYPE setting
+    # Model is loaded based on config.GAIT_MODEL setting
     
     quality_assessor = GaitSequenceQualityAssessor(config.QUALITY_ASSESSOR_CONFIG)
     
     # Initialize person database
     embedding_dimension = 256*16  # Adjust based on your actual embedding size
     person_db = PersonEmbeddingDatabase(dimension=embedding_dimension)
+    
+    # Initialize enhanced CCTV identifier
+    enhanced_identifier = CCTVGaitIdentifier(person_db)
     
     # Initialize person counter for sequential IDs
     next_person_id = 1
@@ -319,22 +324,37 @@ def main():
                                 # Debug track identification state
                                 vprint(f"Track {track_id} needs identity assignment")
                                 
-                                # New identification needed - search database using configured method
+                                # Enhanced identification using multiple strategies for CCTV scenarios
                                 match_threshold = config.IDENTIFICATION_THRESHOLD
                                 
-                                if config.IDENTIFICATION_METHOD == "nucleus":
+                                # Use enhanced identifier with multiple strategies
+                                if hasattr(config, 'ENSEMBLE_IDENTIFICATION') and config.ENSEMBLE_IDENTIFICATION:
+                                    matches = enhanced_identifier.enhanced_identification(
+                                        track_id, embedding, current_quality
+                                    )
+                                    vprint(f"Track {track_id}: Using enhanced CCTV identification (ensemble methods)")
+                                elif config.IDENTIFICATION_METHOD == "nucleus":
                                     matches = person_db.identify_person_adaptive(
                                         embedding, 
                                         method='nucleus',
                                         top_p=config.NUCLEUS_TOP_P,
                                         min_candidates=config.NUCLEUS_MIN_CANDIDATES,
                                         max_candidates=config.NUCLEUS_MAX_CANDIDATES,
-                                        threshold=match_threshold
+                                        threshold=match_threshold,
+                                        close_sim_threshold=config.NUCLEUS_CLOSE_SIM_THRESHOLD,
+                                        amplification_factor=config.NUCLEUS_AMPLIFICATION_FACTOR,
+                                        quality_weight=config.NUCLEUS_QUALITY_WEIGHT,
+                                        enhanced_ranking=config.NUCLEUS_ENHANCED_RANKING
                                     )
-                                    vprint(f"Track {track_id}: Using nucleus sampling (top_p={config.NUCLEUS_TOP_P})")
+                                    vprint(f"Track {track_id}: Using enhanced nucleus sampling (top_p={config.NUCLEUS_TOP_P})")
                                 else:
                                     matches = person_db.identify_person(embedding, top_k=config.TOP_K_CANDIDATES, threshold=match_threshold)
                                     vprint(f"Track {track_id}: Using top-k sampling (k={config.TOP_K_CANDIDATES})")
+                                
+                                # Check identification confidence for CCTV scenarios
+                                if hasattr(enhanced_identifier, 'get_identification_confidence'):
+                                    confidence = enhanced_identifier.get_identification_confidence(track_id)
+                                    vprint(f"Track {track_id}: Identification confidence: {confidence:.3f}")
                                 
                                 vprint(f"Track {track_id}: Found {len(matches)} potential matches")
                                 for i, match in enumerate(matches):

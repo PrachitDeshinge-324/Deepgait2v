@@ -58,8 +58,8 @@ class SilhouetteExtractor:
         for track in tracks:
             track_id = track.track_id
             
-            # More permissive minimum track requirement
-            min_required_frames = min(self.min_track_frames, 15)  # Reduced from default 20
+            # More permissive minimum track requirement for CCTV scenarios
+            min_required_frames = min(self.min_track_frames, 12)  # Reduced further for CCTV
             
             # Skip if track hasn't been visible long enough
             if not hasattr(track, 'frame_count') or track.frame_count < min_required_frames:
@@ -169,8 +169,8 @@ class SilhouetteExtractor:
                 best_sequence = [silhouette for _, silhouette, _ in window]
                 best_start_idx = start_idx
         
-        # Lower the acceptance threshold to capture more sequences
-        if best_score > 0.6 and best_sequence:  # Lowered from 0.7 to 0.6
+        # Lower the acceptance threshold to capture more sequences for CCTV
+        if best_score > 0.45 and best_sequence:  # Lowered from 0.6 to 0.45 for CCTV scenarios
             # print(f"Found good silhouette sequence for track {track_id} with score {best_score:.2f}")
             self.best_sequences[track_id] = best_sequence
 
