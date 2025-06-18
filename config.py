@@ -11,7 +11,7 @@ DEEPGAITV2_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"
 GAITBASE_MODEL_PATH = "weights/GaitBase_DA-180000.pt"
 SKELETONGAITPP_MODEL_PATH = "weights/SkeletonGaitPP_30_DA-50000.pt"
 VIDEO_DIR = '../Person_new/input'
-VIDEO_NAME = '3c1.mp4'
+VIDEO_NAME = '3c.mp4'
 VIDEO_PATH = f"{VIDEO_DIR}/{VIDEO_NAME}"  # Path to the input video file
 
 # Data storage paths
@@ -49,7 +49,7 @@ ENSEMBLE_IDENTIFICATION = True  # Enable ensemble methods for better accuracy
 MULTI_SEQUENCE_MATCHING = True  # Use multiple sequences per person for matching
 
 # Processing limits
-MAX_FRAMES = 400  # Increased for better gallery building
+MAX_FRAMES = 300  # Increased for better gallery building
 SAVE_VIDEO = True  # Whether to save processed video
 SAVE_FRAMES = False  # Whether to save individual frames
 SHOW_DISPLAY = True  # Whether to show display window
@@ -165,7 +165,7 @@ FACE_DETECTION_MODEL = 'buffalo_l'  # InsightFace model name
 FACE_RECOGNITION_MODEL = 'buffalo_l'  # Face recognition model
 FACE_DETECTION_SIZE = (320, 320)  # Detection resolution (smaller for performance)
 FACE_THRESHOLD = 0.2  # Face recognition similarity threshold
-FACE_QUALITY_THRESHOLD = 0.6  # Minimum face quality threshold (increased for better quality)
+FACE_QUALITY_THRESHOLD = 0.2  # Minimum face quality threshold (lowered for debugging)
 
 # Multi-modal fusion weights (adaptive weights will be used based on quality)
 FACE_WEIGHT = 0.7  # Base weight for face recognition in multi-modal fusion

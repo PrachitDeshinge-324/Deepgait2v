@@ -115,13 +115,16 @@ class PersonEmbeddingDatabase:
         self.id_to_index[person_id] = idx
         self.index_to_id.append(person_id)
         
-        # Store person info
+        # Store person info with multimodal support
         self.people[person_id] = {
             'name': name,
             'quality': quality,
             'created': datetime.now(),
             'last_updated': datetime.now(),
             'metadata': metadata or {},
+            'gait_embeddings': [embedding.copy()],  # Store the initial gait embedding
+            'face_embeddings': [],  # Initialize empty face embeddings
+            'qualities': [quality]  # Store the initial quality
         }
         
         # Cache the embedding

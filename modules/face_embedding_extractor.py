@@ -36,6 +36,7 @@ class FaceEmbeddingExtractor:
         self.face_cache = {}  # track_id -> list of (frame_num, face_crop, face_obj, quality)
         self.best_faces = {}  # track_id -> (face_obj, quality, face_crop)
         self.face_embeddings_cache = {}  # track_id -> cached embedding
+        self.last_face_boxes = {}  # track_id -> face box info for visualization
         self.face_window_size = getattr(config, 'FACE_CACHE_SIZE', 30)  # Number of faces to cache before selecting best
         self.min_quality_threshold = getattr(config, 'FACE_QUALITY_THRESHOLD', 0.5)
         self.frame_num = 0
@@ -58,13 +59,20 @@ class FaceEmbeddingExtractor:
         for track in tracks:
             track_id = track.track_id
             
-            # Skip if track hasn't been visible long enough
-            if not hasattr(track, 'frame_count') or track.frame_count < 10:
+            # Debug: Print track info
+            frame_count = getattr(track, 'frame_count', 0)
+            print(f"DEBUG Face Extractor - Track {track_id}: frame_count={frame_count}")
+            
+            # Skip if track hasn't been visible long enough (reduced for debugging)
+            if not hasattr(track, 'frame_count') or track.frame_count < 3:
+                print(f"DEBUG Face Extractor - Track {track_id} skipped: not visible long enough")
                 continue
                 
             # Extract bounding box
             tlwh = track.tlwh
             x, y, w, h = map(int, tlwh)
+            
+            print(f"DEBUG Face Extractor - Track {track_id}: extracting from region {x},{y} size {w}x{h}")
             
             # Create a slightly larger crop for face detection (focus on upper body)
             face_crop_x = max(0, x - int(w * 0.1))
@@ -74,6 +82,8 @@ class FaceEmbeddingExtractor:
             
             face_crop = frame[face_crop_y:face_crop_y+face_crop_h, face_crop_x:face_crop_x+face_crop_w]
             
+            print(f"DEBUG Face Extractor - Track {track_id}: face crop region {face_crop_x},{face_crop_y} size {face_crop_w}x{face_crop_h}, actual shape: {face_crop.shape}")
+            
             # Skip if crop is empty
             if face_crop.size == 0:
                 continue
@@ -81,12 +91,17 @@ class FaceEmbeddingExtractor:
             # Detect faces
             faces = self.face_analyzer.get(face_crop)
             
+            print(f"DEBUG Face Extractor - Track {track_id}: detected {len(faces)} faces")
+            
             if len(faces) > 0:
                 # Find best face in this frame based on detection score
                 best_face = max(faces, key=lambda x: x.det_score)
+                print(f"DEBUG Face Extractor - Track {track_id}: best face det_score={best_face.det_score}")
                 
                 # Calculate quality score
                 quality_score = self._evaluate_face_quality(best_face, face_crop)
+                
+                print(f"DEBUG Face Extractor - Track {track_id}: face quality={quality_score:.3f}")
                 
                 # Store face in cache
                 if track_id not in self.face_cache:
@@ -105,8 +120,49 @@ class FaceEmbeddingExtractor:
         
         # Return track_id -> embeddings for tracks that have a face
         result = {}
+        face_boxes = {}  # Store face bounding boxes for visualization
+        
         for track_id in self.best_faces:
-            result[track_id] = self.get_face_embedding(track_id)
+            embedding = self.get_face_embedding(track_id)
+            if embedding is not None:
+                result[track_id] = embedding
+                
+                # Get face bounding box for visualization
+                face_obj, quality_score, face_crop = self.best_faces[track_id]
+                
+                # Get the original track to calculate face position in frame
+                track = None
+                for t in tracks:
+                    if t.track_id == track_id:
+                        track = t
+                        break
+                
+                if track is not None:
+                    # Calculate face crop region
+                    tlwh = track.tlwh
+                    x, y, w, h = map(int, tlwh)
+                    face_crop_x = max(0, x - int(w * 0.1))
+                    face_crop_y = max(0, y - int(h * 0.1))
+                    
+                    # Get face bbox relative to crop and convert to frame coordinates
+                    face_bbox = face_obj.bbox  # [x1, y1, x2, y2] relative to crop
+                    frame_face_x1 = int(face_crop_x + face_bbox[0])
+                    frame_face_y1 = int(face_crop_y + face_bbox[1])
+                    frame_face_x2 = int(face_crop_x + face_bbox[2])
+                    frame_face_y2 = int(face_crop_y + face_bbox[3])
+                    
+                    face_boxes[track_id] = {
+                        'bbox': [frame_face_x1, frame_face_y1, frame_face_x2, frame_face_y2],
+                        'quality': quality_score,
+                        'det_score': face_obj.det_score
+                    }
+                
+                print(f"DEBUG Face Extractor - Track {track_id}: face embedding extracted, shape={embedding.shape}")
+            else:
+                print(f"DEBUG Face Extractor - Track {track_id}: face embedding extraction failed")
+        
+        # Store face boxes for visualization
+        self.last_face_boxes = face_boxes
         
         return result
     
@@ -212,34 +268,24 @@ class FaceEmbeddingExtractor:
         
         # Only extract embedding if quality is above threshold
         if quality < self.min_quality_threshold:
+            print(f"DEBUG Face Extractor - Track {track_id}: quality {quality:.3f} below threshold {self.min_quality_threshold}")
             return None
         
         try:
-            # Extract face region from the crop using bounding box
-            bbox = best_face.bbox.astype(int)
-            face_region = face_crop[bbox[1]:bbox[3], bbox[0]:bbox[2]]
+            # Use the face embedding directly from the detected face
+            # The face is already detected and has the embedding computed by InsightFace
+            face_embedding = best_face.embedding
             
-            # Resize face region to expected size (112x112 for InsightFace)
-            if face_region.size > 0:
-                face_region = cv2.resize(face_region, (112, 112))
-                
-                # Extract embedding using InsightFace - use the face_analyzer's get method
-                # which already includes face detection and embedding extraction
-                faces = self.face_analyzer.get(face_region)
-                if len(faces) > 0:
-                    face_embedding = faces[0].embedding
-                    
-                    # Normalize the embedding for better similarity computation
-                    face_embedding = face_embedding / np.linalg.norm(face_embedding)
-                    
-                    # Cache the embedding
-                    self.face_embeddings_cache[track_id] = face_embedding
-                    
-                    return face_embedding
-                else:
-                    return None
-            else:
-                return None
+            print(f"DEBUG Face Extractor - Track {track_id}: using direct face embedding, shape={face_embedding.shape}")
+            
+            # Normalize the embedding for better similarity computation
+            face_embedding = face_embedding / np.linalg.norm(face_embedding)
+            
+            # Cache the embedding
+            self.face_embeddings_cache[track_id] = face_embedding
+            
+            print(f"DEBUG Face Extractor - Track {track_id}: embedding extracted successfully, normalized shape={face_embedding.shape}")
+            return face_embedding
                 
         except Exception as e:
             print(f"Error extracting face embedding for track {track_id}: {e}")

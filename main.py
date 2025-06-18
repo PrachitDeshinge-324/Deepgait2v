@@ -94,6 +94,32 @@ def should_update_embedding(current_quality, stored_quality, similarity):
         
     return False
 
+def debug_database_face_embeddings(person_db, track_face_embeddings):
+    """Debug function to check face embedding storage"""
+    print("\n=== Face Embedding Debug ===")
+    
+    # Check how many people have face embeddings
+    people_with_faces = 0
+    total_face_embeddings = 0
+    
+    for person_id, data in person_db.people.items():
+        if 'face_embeddings' in data and len(data['face_embeddings']) > 0:
+            people_with_faces += 1
+            total_face_embeddings += len(data['face_embeddings'])
+            print(f"Person {data['name']} ({person_id}): {len(data['face_embeddings'])} face embeddings")
+    
+    print(f"Total people in database: {len(person_db.people)}")
+    print(f"People with face embeddings: {people_with_faces}")
+    print(f"Total face embeddings stored: {total_face_embeddings}")
+    print(f"Current track face embeddings cache: {len(track_face_embeddings)}")
+    
+    # Show current track face embeddings
+    for track_id, embedding in track_face_embeddings.items():
+        if embedding is not None:
+            print(f"Track {track_id}: Face embedding cached (shape: {embedding.shape})")
+    
+    print("=== End Debug ===\n")
+
 def main():
     """Main function to run the tracking and recognition application with quality control"""
     
@@ -369,7 +395,19 @@ def main():
                                 vprint(f"Track {track_id} already identified as {track_identities[track_id]['name']}")
                                 if current_quality > current_person_quality:
                                     vprint(f"Updating existing identity {current_person_id} with higher quality embedding")
-                                    person_db.update_person(current_person_id, embedding=embedding, quality=current_quality)
+                                    # Get current face embedding for this track if available
+                                    current_face_embedding = track_face_embeddings.get(track_id, None)
+                                    if current_face_embedding is not None:
+                                        person_db.update_person_multimodal(
+                                            current_person_id, gait_embedding=embedding, 
+                                            face_embedding=current_face_embedding, quality=current_quality
+                                        )
+                                        vprint(f"Updated person {current_person_id} with both gait and face embeddings")
+                                    else:
+                                        person_db.update_person_multimodal(
+                                            current_person_id, gait_embedding=embedding, quality=current_quality
+                                        )
+                                        vprint(f"Updated person {current_person_id} with gait embedding only")
                                     track_identities[track_id]['quality'] = current_quality
                             else:
                                 # Debug track identification state
@@ -529,6 +567,10 @@ def main():
                                     else:
                                         vprint(f"Track {track_id}: Created new person {new_person_name} because no matches found")
         
+        # Debug face embeddings periodically
+        if frame_count % 100 == 0 and face_extractor is not None:
+            debug_database_face_embeddings(person_db, track_face_embeddings)
+        
         # Clean up old tracks that are no longer active
         for track_id in list(track_silhouettes.keys()):
             if track_id not in active_track_ids:
@@ -543,6 +585,10 @@ def main():
         
         # Visualize results
         vis_frame = visualizer.draw_tracks(frame, tracks)
+        
+        # Draw face bounding boxes if face extractor is available
+        if face_extractor is not None and hasattr(face_extractor, 'last_face_boxes'):
+            vis_frame = visualizer.draw_face_boxes(vis_frame, face_extractor.last_face_boxes)
         
         # Check for duplicate person IDs (for visualization)
         person_id_counts = {}

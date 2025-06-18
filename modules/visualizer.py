@@ -60,3 +60,31 @@ class Visualizer:
                    self.fps_color, self.line_thickness)
         
         return frame
+    
+    def draw_face_boxes(self, frame, face_boxes):
+        """
+        Draw face detection bounding boxes on frame
+        
+        Args:
+            frame (numpy.ndarray): Input frame
+            face_boxes (dict): Dictionary of track_id -> face box info
+                              {'bbox': [x1, y1, x2, y2], 'quality': float, 'det_score': float}
+            
+        Returns:
+            numpy.ndarray: Frame with face boxes drawn
+        """
+        for track_id, face_info in face_boxes.items():
+            if face_info is not None and 'bbox' in face_info:
+                x1, y1, x2, y2 = face_info['bbox']
+                quality = face_info.get('quality', 0.0)
+                det_score = face_info.get('det_score', 0.0)
+                
+                # Draw face bounding box in green
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                
+                # Draw face info text
+                text = f"Face {track_id}: Q={quality:.2f}, D={det_score:.2f}"
+                cv2.putText(frame, text, (x1, y1-5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        
+        return frame
