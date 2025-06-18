@@ -11,7 +11,7 @@ DEEPGAITV2_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"
 GAITBASE_MODEL_PATH = "weights/GaitBase_DA-180000.pt"
 SKELETONGAITPP_MODEL_PATH = "weights/SkeletonGaitPP_30_DA-50000.pt"
 VIDEO_DIR = '../Person_new/input'
-VIDEO_NAME = '3c.mp4'
+VIDEO_NAME = '3c1.mp4'
 VIDEO_PATH = f"{VIDEO_DIR}/{VIDEO_NAME}"  # Path to the input video file
 
 # Data storage paths
@@ -49,10 +49,10 @@ ENSEMBLE_IDENTIFICATION = True  # Enable ensemble methods for better accuracy
 MULTI_SEQUENCE_MATCHING = True  # Use multiple sequences per person for matching
 
 # Processing limits
-MAX_FRAMES = 600  # Increased for better gallery building
+MAX_FRAMES = 400  # Increased for better gallery building
 SAVE_VIDEO = True  # Whether to save processed video
 SAVE_FRAMES = False  # Whether to save individual frames
-SHOW_DISPLAY = False  # Whether to show display window
+SHOW_DISPLAY = True  # Whether to show display window
 VERBOSE = False  # Enable detailed logs for debugging
 SHOW_PROGRESS = True  # Whether to show progress bar
 
@@ -158,6 +158,34 @@ SKELETONGAITPP_MULTIMODAL_PREPROCESSING = {
     'temporal_consistency': True,    # Enable temporal consistency for poses
     'pose_amplification': 1.5,       # Amplify pose signals for better detection
 }
+
+# Face embedding configuration
+ENABLE_FACE_RECOGNITION = True  # Enable face embedding extraction
+FACE_DETECTION_MODEL = 'buffalo_l'  # InsightFace model name
+FACE_RECOGNITION_MODEL = 'buffalo_l'  # Face recognition model
+FACE_DETECTION_SIZE = (320, 320)  # Detection resolution (smaller for performance)
+FACE_THRESHOLD = 0.2  # Face recognition similarity threshold
+FACE_QUALITY_THRESHOLD = 0.6  # Minimum face quality threshold (increased for better quality)
+
+# Multi-modal fusion weights (adaptive weights will be used based on quality)
+FACE_WEIGHT = 0.7  # Base weight for face recognition in multi-modal fusion
+GAIT_WEIGHT = 0.3  # Base weight for gait recognition in multi-modal fusion
+REQUIRE_BOTH_MODALITIES = False  # If True, require both face and gait for identification
+
+# Face embedding settings
+FACE_CACHE_SIZE = 5  # Number of faces to cache per track
+FACE_QUALITY_WINDOW = 2  # Frames to wait before selecting best face
+FACE_CROP_UPPER_BODY_RATIO = 0.6  # Focus on upper body for face detection
+FACE_MIN_SIZE = 50  # Minimum face size in pixels
+FACE_MAX_EDGE_DISTANCE = 10  # Minimum distance from crop edge for valid face
+
+# Enhanced face recognition settings
+FACE_BLUR_THRESHOLD = 500  # Minimum Laplacian variance for non-blurry faces
+FACE_EMBEDDING_NORMALIZATION = True  # Normalize face embeddings for better similarity
+FACE_TEMPORAL_CONSISTENCY = True  # Use temporal consistency for face embeddings
+FACE_CACHE_SIZE = 30  # Number of faces to cache per track
+FACE_QUALITY_WINDOW = 10  # Frames to wait before selecting best face
+FACE_CROP_UPPER_BODY_RATIO = 0.6  # Focus on upper body for face detection
 
 # Get the appropriate config and model path based on selected model type
 def get_current_model_config():

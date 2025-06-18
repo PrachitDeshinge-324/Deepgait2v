@@ -20,6 +20,8 @@ from modules.silhouette_extractor import SilhouetteExtractor
 from modules.gait_recognizer import GaitRecognizer
 from modules.quality_assessor import GaitSequenceQualityAssessor
 from modules.enhanced_identifier import CCTVGaitIdentifier  # Import enhanced identifier
+from modules.multimodal_identifier import MultiModalIdentifier  # Import multimodal identifier
+from modules.face_embedding_extractor import FaceEmbeddingExtractor  # Import face extractor
 from utils.database import PersonEmbeddingDatabase  # Import the database class
 
 def vprint(*args, **kwargs):
@@ -114,12 +116,33 @@ def main():
     
     quality_assessor = GaitSequenceQualityAssessor(config.QUALITY_ASSESSOR_CONFIG)
     
+    # Initialize face embedding extractor if enabled
+    face_extractor = None
+    if getattr(config, 'ENABLE_FACE_RECOGNITION', True):
+        try:
+            face_extractor = FaceEmbeddingExtractor(
+                device=getattr(config, 'DEVICE', 'cuda:0'),
+                det_name=getattr(config, 'FACE_DETECTION_MODEL', 'buffalo_l'),
+                rec_name=getattr(config, 'FACE_RECOGNITION_MODEL', 'buffalo_l'),
+                det_size=getattr(config, 'FACE_DETECTION_SIZE', (320, 320))
+            )
+            vprint("Face embedding extractor initialized successfully")
+        except Exception as e:
+            print(f"Warning: Face embedding extractor initialization failed: {e}")
+            print("Continuing with gait-only recognition...")
+            face_extractor = None
+    
     # Initialize person database
     embedding_dimension = 256*16  # Adjust based on your actual embedding size
     person_db = PersonEmbeddingDatabase(dimension=embedding_dimension)
     
-    # Initialize enhanced CCTV identifier
-    enhanced_identifier = CCTVGaitIdentifier(person_db)
+    # Initialize enhanced CCTV identifier - use multimodal if face extractor available
+    if face_extractor is not None:
+        enhanced_identifier = MultiModalIdentifier(person_db)
+        vprint("Using MultiModalIdentifier (gait + face)")
+    else:
+        enhanced_identifier = CCTVGaitIdentifier(person_db)
+        vprint("Using CCTVGaitIdentifier (gait only)")
     
     # Initialize person counter for sequential IDs
     next_person_id = 1
@@ -208,6 +231,9 @@ def main():
     # Dictionary to store quality assessments
     track_quality_history = {}
     
+    # Dictionary to store face embeddings for each track
+    track_face_embeddings = {}
+    
     # Dictionary to store recognition results
     track_identities = {}
     
@@ -264,6 +290,31 @@ def main():
         
         # Extract silhouettes for active tracks
         silhouette_sequences = silhouette_extractor.extract_silhouettes(frame, tracks)
+        
+        # Extract face embeddings for active tracks if face extractor is available
+        face_embeddings = {}
+        if face_extractor is not None:
+            try:
+                face_embeddings = face_extractor.extract_faces(frame, tracks)
+                # Update track face embeddings cache with quality filtering
+                for track_id, face_embedding in face_embeddings.items():
+                    if face_embedding is not None:
+                        # Get the face quality for this track
+                        if track_id in face_extractor.best_faces:
+                            _, face_quality, _ = face_extractor.best_faces[track_id]
+                            # Only cache high-quality face embeddings
+                            if face_quality >= getattr(config, 'FACE_QUALITY_THRESHOLD', 0.5):
+                                track_face_embeddings[track_id] = face_embedding
+                                vprint(f"Track {track_id}: High-quality face embedding extracted - Quality: {face_quality:.3f}, Shape: {face_embedding.shape}")
+                            else:
+                                vprint(f"Track {track_id}: Face embedding quality too low ({face_quality:.3f}), skipping")
+                        else:
+                            # Fallback for backward compatibility
+                            track_face_embeddings[track_id] = face_embedding
+                            vprint(f"Track {track_id}: Face embedding extracted - Shape: {face_embedding.shape}")
+            except Exception as e:
+                vprint(f"Face extraction failed: {e}")
+                face_embeddings = {}
         
         # Update track silhouettes and process quality
         for track_id, sequence in silhouette_sequences.items():
@@ -324,34 +375,52 @@ def main():
                                 # Debug track identification state
                                 vprint(f"Track {track_id} needs identity assignment")
                                 
-                                # Enhanced identification using multiple strategies for CCTV scenarios
+                                # Get face embedding for this track if available
+                                current_face_embedding = track_face_embeddings.get(track_id, None)
+                                
+                                # Enhanced multimodal identification using multiple strategies
                                 match_threshold = config.IDENTIFICATION_THRESHOLD
                                 
-                                # Use enhanced identifier with multiple strategies
-                                if hasattr(config, 'ENSEMBLE_IDENTIFICATION') and config.ENSEMBLE_IDENTIFICATION:
-                                    matches = enhanced_identifier.enhanced_identification(
-                                        track_id, embedding, current_quality
-                                    )
-                                    vprint(f"Track {track_id}: Using enhanced CCTV identification (ensemble methods)")
-                                elif config.IDENTIFICATION_METHOD == "nucleus":
-                                    matches = person_db.identify_person_adaptive(
-                                        embedding, 
-                                        method='nucleus',
-                                        top_p=config.NUCLEUS_TOP_P,
-                                        min_candidates=config.NUCLEUS_MIN_CANDIDATES,
-                                        max_candidates=config.NUCLEUS_MAX_CANDIDATES,
-                                        threshold=match_threshold,
-                                        close_sim_threshold=config.NUCLEUS_CLOSE_SIM_THRESHOLD,
-                                        amplification_factor=config.NUCLEUS_AMPLIFICATION_FACTOR,
-                                        quality_weight=config.NUCLEUS_QUALITY_WEIGHT,
-                                        enhanced_ranking=config.NUCLEUS_ENHANCED_RANKING
-                                    )
-                                    vprint(f"Track {track_id}: Using enhanced nucleus sampling (top_p={config.NUCLEUS_TOP_P})")
+                                # Use multimodal identifier if available
+                                if isinstance(enhanced_identifier, MultiModalIdentifier):
+                                    if hasattr(config, 'ENSEMBLE_IDENTIFICATION') and config.ENSEMBLE_IDENTIFICATION:
+                                        matches = enhanced_identifier.enhanced_identification(
+                                            track_id, gait_embedding=embedding, face_embedding=current_face_embedding,
+                                            sequence_quality=current_quality
+                                        )
+                                        vprint(f"Track {track_id}: Using enhanced multimodal identification (ensemble methods)")
+                                    else:
+                                        matches = enhanced_identifier.identify_person(
+                                            track_id, gait_embedding=embedding, face_embedding=current_face_embedding,
+                                            quality=current_quality
+                                        )
+                                        vprint(f"Track {track_id}: Using multimodal identification (gait + face)")
                                 else:
-                                    matches = person_db.identify_person(embedding, top_k=config.TOP_K_CANDIDATES, threshold=match_threshold)
-                                    vprint(f"Track {track_id}: Using top-k sampling (k={config.TOP_K_CANDIDATES})")
+                                    # Fallback to gait-only identification
+                                    if hasattr(config, 'ENSEMBLE_IDENTIFICATION') and config.ENSEMBLE_IDENTIFICATION:
+                                        matches = enhanced_identifier.enhanced_identification(
+                                            track_id, embedding, current_quality
+                                        )
+                                        vprint(f"Track {track_id}: Using enhanced CCTV identification (gait-only)")
+                                    elif config.IDENTIFICATION_METHOD == "nucleus":
+                                        matches = person_db.identify_person_adaptive(
+                                            embedding, 
+                                            method='nucleus',
+                                            top_p=config.NUCLEUS_TOP_P,
+                                            min_candidates=config.NUCLEUS_MIN_CANDIDATES,
+                                            max_candidates=config.NUCLEUS_MAX_CANDIDATES,
+                                            threshold=match_threshold,
+                                            close_sim_threshold=config.NUCLEUS_CLOSE_SIM_THRESHOLD,
+                                            amplification_factor=config.NUCLEUS_AMPLIFICATION_FACTOR,
+                                            quality_weight=config.NUCLEUS_QUALITY_WEIGHT,
+                                            enhanced_ranking=config.NUCLEUS_ENHANCED_RANKING
+                                        )
+                                        vprint(f"Track {track_id}: Using enhanced nucleus sampling (top_p={config.NUCLEUS_TOP_P})")
+                                    else:
+                                        matches = person_db.identify_person(embedding, top_k=config.TOP_K_CANDIDATES, threshold=match_threshold)
+                                        vprint(f"Track {track_id}: Using top-k sampling (k={config.TOP_K_CANDIDATES})")
                                 
-                                # Check identification confidence for CCTV scenarios
+                                # Check identification confidence
                                 if hasattr(enhanced_identifier, 'get_identification_confidence'):
                                     confidence = enhanced_identifier.get_identification_confidence(track_id)
                                     vprint(f"Track {track_id}: Identification confidence: {confidence:.3f}")
@@ -400,7 +469,15 @@ def main():
                                     
                                     # Update database if quality improved
                                     if current_quality > stored_quality:
-                                        person_db.update_person(person_id, embedding=embedding, quality=current_quality)
+                                        # Get current face embedding for this track
+                                        current_face_embedding = track_face_embeddings.get(track_id, None)
+                                        if current_face_embedding is not None:
+                                            person_db.update_person_multimodal(
+                                                person_id, gait_embedding=embedding, 
+                                                face_embedding=current_face_embedding, quality=current_quality
+                                            )
+                                        else:
+                                            person_db.update_person(person_id, embedding=embedding, quality=current_quality)
                                 else:
                                     # No available matches - create new person
                                     vprint(f"No available matches for Track {track_id} - creating new person")
@@ -414,14 +491,29 @@ def main():
                                     # Increment the counter for next time
                                     next_person_id += 1
                                     
-                                    # Add to database
-                                    person_db.add_person(
-                                        person_id=new_person_id,
-                                        name=new_person_name,
-                                        embedding=embedding,
-                                        quality=current_quality,
-                                        metadata={'first_seen': datetime.now().isoformat()}
-                                    )
+                                    # Get current face embedding for this track
+                                    current_face_embedding = track_face_embeddings.get(track_id, None)
+                                    
+                                    # Add to database with multimodal capabilities
+                                    if current_face_embedding is not None:
+                                        person_db.add_person_multimodal(
+                                            person_id=new_person_id,
+                                            name=new_person_name,
+                                            gait_embedding=embedding,
+                                            face_embedding=current_face_embedding,
+                                            quality=current_quality,
+                                            metadata={'first_seen': datetime.now().isoformat()}
+                                        )
+                                        vprint(f"Added new person {new_person_name} with both gait and face embeddings")
+                                    else:
+                                        person_db.add_person(
+                                            person_id=new_person_id,
+                                            name=new_person_name,
+                                            embedding=embedding,
+                                            quality=current_quality,
+                                            metadata={'first_seen': datetime.now().isoformat()}
+                                        )
+                                        vprint(f"Added new person {new_person_name} with gait embedding only")
                                     
                                     # Assign to track
                                     track_identities[track_id] = {
@@ -445,6 +537,8 @@ def main():
                     del track_silhouettes[track_id]
                 if track_id in track_quality_history:
                     del track_quality_history[track_id]
+                if track_id in track_face_embeddings:
+                    del track_face_embeddings[track_id]
                 # Keep track timings and identities for a while for conflict detection
         
         # Visualize results
@@ -494,6 +588,11 @@ def main():
                 if is_new:
                     label += " [NEW]"  # Indicate newly created person
                 
+                # Add face detection indicator
+                has_face = track_id in track_face_embeddings
+                if has_face:
+                    label += " 👤"  # Face icon when face embedding is available
+                
                 # Add background for text
                 text_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
                 cv2.rectangle(vis_frame, 
@@ -539,6 +638,15 @@ def main():
         db_text = f"Database: {db_size} persons"
         cv2.putText(vis_frame, db_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
+        # Add multimodal status indicator
+        multimodal_status = "Multimodal (Gait+Face)" if face_extractor is not None else "Gait Only"
+        cv2.putText(vis_frame, multimodal_status, (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        
+        # Add face detection count
+        num_faces_detected = len([tid for tid in active_track_ids if tid in track_face_embeddings])
+        face_text = f"Faces: {num_faces_detected}/{num_active_tracks}"
+        cv2.putText(vis_frame, face_text, (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        
         # Add FPS, frame info, and current model
         cv2.putText(vis_frame, f"FPS: {fps:.1f} | Frame: {frame_count}", 
                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -546,7 +654,7 @@ def main():
         # Show current gait recognition model and sampling method
         model_text = f"Model: {gait_recognizer.current_model_type}"
         cv2.putText(vis_frame, model_text, 
-                   (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                   (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         
         # Show sampling method
         if config.IDENTIFICATION_METHOD == "nucleus":
@@ -554,7 +662,7 @@ def main():
         else:
             sampling_text = f"Sampling: Top-K (k={config.TOP_K_CANDIDATES})"
         cv2.putText(vis_frame, sampling_text, 
-                   (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                   (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         
         # Display and/or save frame
         if config.SAVE_VIDEO and video_writer is not None:

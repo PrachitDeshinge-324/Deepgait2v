@@ -4,6 +4,8 @@ import pickle
 import time
 import faiss
 from datetime import datetime
+from typing import List, Dict, Tuple, Optional
+from typing import List, Tuple, Optional
 
 class PersonEmbeddingDatabase:
     def __init__(self, dimension=256*16, use_cosine=True, metric_type=faiss.METRIC_L2):
@@ -703,6 +705,153 @@ class PersonEmbeddingDatabase:
         print(f"Database loaded from {filepath} with {len(self.people)} people")
         return True
 
+    def add_person_multimodal(self, person_id: str, name: str, 
+                         gait_embedding: Optional[np.ndarray] = None,
+                         face_embedding: Optional[np.ndarray] = None,
+                         quality: float = 1.0, metadata: Optional[dict] = None) -> bool:
+        """
+        Add a person to database with both gait and face embeddings
+        
+        Args:
+            person_id: Unique person identifier
+            name: Person's name
+            gait_embedding: Gait embedding (optional)
+            face_embedding: Face embedding (optional)
+            quality: Quality score for the embeddings
+            metadata: Optional additional information
+            
+        Returns:
+            Success boolean
+        """
+        if person_id in self.people:
+            print(f"Person ID {person_id} already exists. Use update_person_multimodal instead.")
+            return False
+            
+        if gait_embedding is None and face_embedding is None:
+            print("At least one embedding (gait or face) must be provided")
+            return False
+        
+        # Add to database using gait embedding for FAISS index (primary modality)
+        if gait_embedding is not None:
+            success = self.add_person(person_id, name, gait_embedding, quality, metadata)
+            if not success:
+                return False
+        else:
+            # If only face embedding, create placeholder entry
+            self.people[person_id] = {
+                'name': name,
+                'quality': quality,
+                'created': datetime.now(),
+                'last_updated': datetime.now(),
+                'metadata': metadata or {},
+                'gait_embeddings': [],
+                'face_embeddings': [],
+                'qualities': []
+            }
+        
+        # Initialize multimodal storage if not exists
+        if 'gait_embeddings' not in self.people[person_id]:
+            self.people[person_id]['gait_embeddings'] = []
+        if 'face_embeddings' not in self.people[person_id]:
+            self.people[person_id]['face_embeddings'] = []
+        if 'qualities' not in self.people[person_id]:
+            self.people[person_id]['qualities'] = []
+        
+        # Add embeddings if provided
+        if gait_embedding is not None:
+            self.people[person_id]['gait_embeddings'].append(gait_embedding.copy())
+        if face_embedding is not None:
+            self.people[person_id]['face_embeddings'].append(face_embedding.copy())
+        
+        self.people[person_id]['qualities'].append(quality)
+        return True
+
+    def identify_person_face(self, embedding: np.ndarray, top_k: int = 5, 
+                            threshold: float = 0.5) -> List[Tuple]:
+        """
+        Identify person using face embedding
+        
+        Args:
+            embedding: Face embedding to match
+            top_k: Number of results to return
+            threshold: Similarity threshold
+            
+        Returns:
+            List of (person_id, similarity, name, quality) tuples
+        """
+        results = []
+        
+        for person_id, person_data in self.people.items():
+            if not person_data.get('face_embeddings'):
+                continue
+                
+            # Get best similarity across all face embeddings for this person
+            similarities = []
+            for face_emb in person_data['face_embeddings']:
+                # Use cosine similarity for face embeddings
+                similarity = np.dot(embedding, face_emb) / (np.linalg.norm(embedding) * np.linalg.norm(face_emb))
+                similarities.append(similarity)
+            
+            # Use best match
+            best_similarity = max(similarities) if similarities else 0
+            if best_similarity >= threshold:
+                avg_quality = sum(person_data['qualities']) / len(person_data['qualities'])
+                results.append((person_id, best_similarity, person_data['name'], avg_quality))
+        
+        # Sort by similarity
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]
+
+    def update_person_multimodal(self, person_id: str, 
+                               gait_embedding: Optional[np.ndarray] = None,
+                               face_embedding: Optional[np.ndarray] = None,
+                               name: Optional[str] = None, quality: Optional[float] = None,
+                               metadata: Optional[dict] = None) -> bool:
+        """
+        Update an existing person with new multimodal embeddings
+        
+        Args:
+            person_id: Person identifier
+            gait_embedding: New gait embedding (optional)
+            face_embedding: New face embedding (optional)
+            name: Updated name (optional)
+            quality: Quality score (optional)
+            metadata: Additional metadata (optional)
+            
+        Returns:
+            Success boolean
+        """
+        if person_id not in self.people:
+            print(f"Person ID {person_id} not found.")
+            return False
+        
+        # Update basic info
+        if name:
+            self.people[person_id]['name'] = name
+        if quality is not None:
+            self.people[person_id]['quality'] = quality
+        if metadata:
+            self.people[person_id]['metadata'].update(metadata)
+        
+        # Initialize multimodal storage if not exists
+        if 'gait_embeddings' not in self.people[person_id]:
+            self.people[person_id]['gait_embeddings'] = []
+        if 'face_embeddings' not in self.people[person_id]:
+            self.people[person_id]['face_embeddings'] = []
+        if 'qualities' not in self.people[person_id]:
+            self.people[person_id]['qualities'] = []
+        
+        # Add new embeddings
+        if gait_embedding is not None:
+            self.people[person_id]['gait_embeddings'].append(gait_embedding.copy())
+        if face_embedding is not None:
+            self.people[person_id]['face_embeddings'].append(face_embedding.copy())
+        if quality is not None:
+            self.people[person_id]['qualities'].append(quality)
+        
+        self.people[person_id]['last_updated'] = datetime.now()
+        return True
+
 
 # Example usage
 def faiss_example():
@@ -917,25 +1066,149 @@ def faiss_example():
             # Low consistency: use max confidence
             return self._ensemble_max_confidence(embeddings_list, top_k, threshold)
     
-    def _cache_embedding_query(self, embedding_hash, results):
-        """Cache query results for performance"""
-        if not self.enable_caching:
-            return
-            
-        if len(self.query_cache) >= self.cache_size:
-            # Remove oldest entries (simple FIFO)
-            oldest_key = next(iter(self.query_cache))
-            del self.query_cache[oldest_key]
+    def add_person_multimodal(self, person_id: str, name: str, 
+                         gait_embedding: Optional[np.ndarray] = None,
+                         face_embedding: Optional[np.ndarray] = None,
+                         quality: float = 1.0, metadata: Optional[dict] = None) -> bool:
+        """
+        Add a person to database with both gait and face embeddings
         
-        self.query_cache[embedding_hash] = results
-    
-    def _get_cached_query(self, embedding_hash):
-        """Get cached query results"""
-        if not self.enable_caching:
-            return None
-        return self.query_cache.get(embedding_hash)
-    
-    def clear_cache(self):
-        """Clear the query cache"""
-        self.query_cache.clear()
-        print("Query cache cleared")
+        Args:
+            person_id: Unique person identifier
+            name: Person's name
+            gait_embedding: Gait embedding (optional)
+            face_embedding: Face embedding (optional)
+            quality: Quality score for the embeddings
+            metadata: Optional additional information
+            
+        Returns:
+            Success boolean
+        """
+        if person_id in self.people:
+            print(f"Person ID {person_id} already exists. Use update_person_multimodal instead.")
+            return False
+            
+        if gait_embedding is None and face_embedding is None:
+            print("At least one embedding (gait or face) must be provided")
+            return False
+        
+        # Add to database using gait embedding for FAISS index (primary modality)
+        if gait_embedding is not None:
+            success = self.add_person(person_id, name, gait_embedding, quality, metadata)
+            if not success:
+                return False
+        else:
+            # If only face embedding, create placeholder entry
+            self.people[person_id] = {
+                'name': name,
+                'quality': quality,
+                'created': datetime.now(),
+                'last_updated': datetime.now(),
+                'metadata': metadata or {},
+                'gait_embeddings': [],
+                'face_embeddings': [],
+                'qualities': []
+            }
+        
+        # Initialize multimodal storage if not exists
+        if 'gait_embeddings' not in self.people[person_id]:
+            self.people[person_id]['gait_embeddings'] = []
+        if 'face_embeddings' not in self.people[person_id]:
+            self.people[person_id]['face_embeddings'] = []
+        if 'qualities' not in self.people[person_id]:
+            self.people[person_id]['qualities'] = []
+        
+        # Add embeddings if provided
+        if gait_embedding is not None:
+            self.people[person_id]['gait_embeddings'].append(gait_embedding.copy())
+        if face_embedding is not None:
+            self.people[person_id]['face_embeddings'].append(face_embedding.copy())
+        
+        self.people[person_id]['qualities'].append(quality)
+        return True
+
+    def identify_person_face(self, embedding: np.ndarray, top_k: int = 5, 
+                            threshold: float = 0.5) -> List[Tuple]:
+        """
+        Identify person using face embedding
+        
+        Args:
+            embedding: Face embedding to match
+            top_k: Number of results to return
+            threshold: Similarity threshold
+            
+        Returns:
+            List of (person_id, similarity, name, quality) tuples
+        """
+        results = []
+        
+        for person_id, person_data in self.people.items():
+            if not person_data.get('face_embeddings'):
+                continue
+                
+            # Get best similarity across all face embeddings for this person
+            similarities = []
+            for face_emb in person_data['face_embeddings']:
+                # Use cosine similarity for face embeddings
+                similarity = np.dot(embedding, face_emb) / (np.linalg.norm(embedding) * np.linalg.norm(face_emb))
+                similarities.append(similarity)
+            
+            # Use best match
+            best_similarity = max(similarities) if similarities else 0
+            if best_similarity >= threshold:
+                avg_quality = sum(person_data['qualities']) / len(person_data['qualities'])
+                results.append((person_id, best_similarity, person_data['name'], avg_quality))
+        
+        # Sort by similarity
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]
+
+    def update_person_multimodal(self, person_id: str, 
+                               gait_embedding: Optional[np.ndarray] = None,
+                               face_embedding: Optional[np.ndarray] = None,
+                               name: Optional[str] = None, quality: Optional[float] = None,
+                               metadata: Optional[dict] = None) -> bool:
+        """
+        Update an existing person with new multimodal embeddings
+        
+        Args:
+            person_id: Person identifier
+            gait_embedding: New gait embedding (optional)
+            face_embedding: New face embedding (optional)
+            name: Updated name (optional)
+            quality: Quality score (optional)
+            metadata: Additional metadata (optional)
+            
+        Returns:
+            Success boolean
+        """
+        if person_id not in self.people:
+            print(f"Person ID {person_id} not found.")
+            return False
+        
+        # Update basic info
+        if name:
+            self.people[person_id]['name'] = name
+        if quality is not None:
+            self.people[person_id]['quality'] = quality
+        if metadata:
+            self.people[person_id]['metadata'].update(metadata)
+        
+        # Initialize multimodal storage if not exists
+        if 'gait_embeddings' not in self.people[person_id]:
+            self.people[person_id]['gait_embeddings'] = []
+        if 'face_embeddings' not in self.people[person_id]:
+            self.people[person_id]['face_embeddings'] = []
+        if 'qualities' not in self.people[person_id]:
+            self.people[person_id]['qualities'] = []
+        
+        # Add new embeddings
+        if gait_embedding is not None:
+            self.people[person_id]['gait_embeddings'].append(gait_embedding.copy())
+        if face_embedding is not None:
+            self.people[person_id]['face_embeddings'].append(face_embedding.copy())
+        if quality is not None:
+            self.people[person_id]['qualities'].append(quality)
+        
+        self.people[person_id]['last_updated'] = datetime.now()
+        return True

@@ -10,5 +10,6 @@ __pycache__/
 *.npy
 *.mp4
 data/
+data*/
 *.DS_Store
 *.zip
