@@ -6,7 +6,7 @@ Configuration settings for the tracking application
 MODEL_PATH = 'weights/yolo11m.pt'
 SEG_MODEL_PATH = 'weights/yolo11l-seg.pt'
 # Model Selection and Configuration
-GAIT_MODEL_TYPE = "DeepGaitV2"  # Start with best-performing model for your CCTV setup
+GAIT_MODEL_TYPE = "DeepGaitV2-P3D"  # Start with best-performing model for your CCTV setup
 DEEPGAITV2_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"
 GAITBASE_MODEL_PATH = "weights/GaitBase_DA-180000.pt"
 SKELETONGAITPP_MODEL_PATH = "weights/SkeletonGaitPP_30_DA-50000.pt"
@@ -49,7 +49,7 @@ ENSEMBLE_IDENTIFICATION = True  # Enable ensemble methods for better accuracy
 MULTI_SEQUENCE_MATCHING = True  # Use multiple sequences per person for matching
 
 # Processing limits
-MAX_FRAMES = 300  # Increased for better gallery building
+MAX_FRAMES = 600  # Increased for better gallery building
 SAVE_VIDEO = True  # Whether to save processed video
 SAVE_FRAMES = False  # Whether to save individual frames
 SHOW_DISPLAY = True  # Whether to show display window
@@ -186,6 +186,12 @@ FACE_TEMPORAL_CONSISTENCY = True  # Use temporal consistency for face embeddings
 FACE_CACHE_SIZE = 30  # Number of faces to cache per track
 FACE_QUALITY_WINDOW = 10  # Frames to wait before selecting best face
 FACE_CROP_UPPER_BODY_RATIO = 0.6  # Focus on upper body for face detection
+
+# Proximity-aware identification parameters
+PROXIMITY_AWARENESS = True  # Enable/disable proximity-aware identification
+PROXIMITY_THRESHOLD = 100  # Pixel height threshold to consider subject close to camera
+DISTANT_IDENTITY_CHANGE_THRESHOLD = 0.3  # Additional confidence needed to change identity when far
+PROXIMITY_FACE_PRIORITY = True  # Prioritize face recognition when close to camera
 
 # Get the appropriate config and model path based on selected model type
 def get_current_model_config():

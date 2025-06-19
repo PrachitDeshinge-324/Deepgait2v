@@ -25,6 +25,85 @@ class MultiModalIdentifier:
         self.gait_weight = getattr(config, 'GAIT_WEIGHT', 0.3)  # Weight for gait recognition
         self.require_both = getattr(config, 'REQUIRE_BOTH_MODALITIES', False)
     
+    def identify_with_proximity_awareness(self, track_id: str, 
+                                        gait_embedding: Optional[np.ndarray] = None,
+                                        face_embedding: Optional[np.ndarray] = None, 
+                                        quality: float = 0.5,
+                                        is_close_to_camera: bool = False) -> List[Tuple]:
+        """
+        Identify person with awareness of proximity to camera
+        
+        Args:
+            track_id: Track identifier
+            gait_embedding: Gait embedding or None
+            face_embedding: Face embedding or None
+            quality: Overall sequence quality
+            is_close_to_camera: Whether subject is close to camera
+            
+        Returns:
+            List of (person_id, confidence, name, quality) tuples
+        """
+        # Store previous identification for this track
+        previous_id = None
+        previous_confidence = 0
+        if track_id in self.sequence_history and self.sequence_history[track_id]:
+            last_match = self.sequence_history[track_id][-1].get('best_match')
+            if last_match:
+                previous_id = last_match[0]
+                previous_confidence = last_match[1]
+        
+        # Get new matches
+        current_matches = self.identify_person(track_id, gait_embedding, face_embedding, quality)
+        
+        # If close to camera, trust current identification more
+        # This would be a high-confidence identification
+        if is_close_to_camera and face_embedding is not None and current_matches:
+            self._update_tracking_history(track_id, gait_embedding, face_embedding, 
+                                        current_matches, quality)
+            return current_matches
+        
+        # If far from camera but previous identification exists, use stricter threshold
+        # for new identifications to override previous one
+        if previous_id and not is_close_to_camera and current_matches:
+            best_match = current_matches[0]
+            
+            # Higher threshold for changing identity when far from camera
+            # Only accept new identity if substantially more confident
+            change_identity_threshold = getattr(config, 'DISTANT_IDENTITY_CHANGE_THRESHOLD', 0.3)
+            
+            # Check if new best match is different from previous ID
+            if best_match[0] != previous_id:
+                # Only change identity if the new match has significantly higher confidence
+                if best_match[1] > previous_confidence + change_identity_threshold:
+                    # Accept the new higher-confidence identity
+                    self._update_tracking_history(track_id, gait_embedding, face_embedding, 
+                                               current_matches, quality)
+                    return current_matches
+                else:
+                    # Retain previous identity with slightly updated confidence
+                    # Find previous identity in current matches if it exists
+                    for match in current_matches:
+                        if match[0] == previous_id:
+                            # Found previous ID in current matches - use this
+                            self._update_tracking_history(track_id, gait_embedding, face_embedding, 
+                                                       [match], quality)
+                            return [match]
+                    
+                    # Previous ID not in current matches, but stick with it
+                    # Find the full details of previous ID from history
+                    for history_item in reversed(self.sequence_history[track_id]):
+                        if history_item.get('best_match') and history_item['best_match'][0] == previous_id:
+                            prev_match = history_item['best_match']
+                            # Slightly penalize confidence for persistent identity
+                            adjusted_match = (prev_match[0], prev_match[1] * 0.95, 
+                                            prev_match[2], prev_match[3])
+                            return [adjusted_match]
+            
+        # Default: use current matches
+        self._update_tracking_history(track_id, gait_embedding, face_embedding, 
+                                    current_matches, quality)
+        return current_matches
+    
     def identify_person(self, track_id: str, gait_embedding: Optional[np.ndarray] = None,
                       face_embedding: Optional[np.ndarray] = None, quality: float = 0.5) -> List[Tuple]:
         """

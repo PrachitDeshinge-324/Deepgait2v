@@ -3,6 +3,12 @@ Device selection utilities for optimal performance
 """
 
 import torch
+import config
+
+def vprint(*args, **kwargs):
+    """Verbose print - only prints if VERBOSE is enabled"""
+    if config.VERBOSE:
+        print(*args, **kwargs)
 
 def get_best_device():
     """
