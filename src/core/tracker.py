@@ -4,7 +4,7 @@ Object tracking module using ByteTracker with frame counting
 
 import numpy as np
 from collections import defaultdict
-from utils.bytetracker import BYTETracker
+from src.utils.bytetracker import BYTETracker
 
 class PersonTracker:
     def __init__(self, config):

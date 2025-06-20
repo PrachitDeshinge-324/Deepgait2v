@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 from collections import defaultdict, deque
 from ultralytics import YOLO
-from utils.device import get_best_device
+from src.utils.device import get_best_device
 from .pose_generator import PoseHeatmapGenerator, SimplifiedPoseGenerator
 import os
 import config

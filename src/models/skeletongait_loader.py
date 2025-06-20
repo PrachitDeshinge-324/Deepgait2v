@@ -13,7 +13,7 @@ from einops import rearrange
 import copy
 
 # Add OpenGait to path
-opengait_path = os.path.join(os.path.dirname(__file__), "../OpenGait")
+opengait_path = os.path.join(os.path.dirname(__file__), "../../OpenGait")
 if opengait_path not in sys.path:
     sys.path.insert(0, opengait_path)
 

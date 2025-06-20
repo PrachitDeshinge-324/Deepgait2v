@@ -7,13 +7,13 @@ import time
 import os
 from tqdm import tqdm
 
-from app.component_manager import ComponentManager
-from app.track_manager import TrackManager
-from app.identification_manager import IdentificationManager
-from app.visualization_handler import VisualizationHandler
-from app.keyboard_handler import KeyboardHandler
-from app.database_handler import DatabaseHandler
-from app.statistics_reporter import StatisticsReporter
+from .component_manager import ComponentManager
+from .track_manager import TrackManager
+from .identification_manager import IdentificationManager
+from .visualization_handler import VisualizationHandler
+from .keyboard_handler import KeyboardHandler
+from .database_handler import DatabaseHandler
+from .statistics_reporter import StatisticsReporter
 
 class GaitRecognitionApp:
     """Main application class for gait recognition with quality control"""
@@ -282,16 +282,23 @@ class GaitRecognitionApp:
         if self.config.SHOW_PROGRESS:
             cap_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
             max_frames = min(cap_frames, self.config.MAX_FRAMES) if cap_frames > 0 else self.config.MAX_FRAMES
-            self.pbar = tqdm(total=max_frames, desc="Processing video", unit="frames")
+            self.pbar = tqdm(total=max_frames, 
+                           desc="Processing video", 
+                           unit="frames",
+                           dynamic_ncols=True,
+                           leave=True,
+                           miniters=1)
     
     def _update_progress_bar(self):
         """Update progress bar with current status"""
-        if self.config.SHOW_PROGRESS:
+        if self.config.SHOW_PROGRESS and hasattr(self, 'pbar'):
             self.pbar.update(1)
             self.pbar.set_postfix({
                 'FPS': f'{self.fps:.1f}',
                 'Tracks': len(self.track_manager.track_silhouettes)
             })
+            # Force refresh
+            self.pbar.refresh()
     
     def _calculate_fps(self):
         """Calculate frames per second"""

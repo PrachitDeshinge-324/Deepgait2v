@@ -5,7 +5,7 @@ from insightface.app import FaceAnalysis
 from insightface.utils import face_align
 from typing import List, Dict, Tuple, Optional
 import config
-from utils.device import vprint
+from src.utils.device import vprint
 class FaceEmbeddingExtractor:
     """Extracts face embeddings from video tracks using InsightFace"""
     

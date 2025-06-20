@@ -1,29 +1,63 @@
 """
 Multi-Modal Person Identification for Enhanced CCTV Recognition
-Combines face and gait biometrics for improved accuracy
+Combines face and gait biometrics for improved accuracy with cross-camera support
 """
 
 import numpy as np
 import cv2
 from typing import List, Dict, Tuple, Optional, Any
-from utils.database import PersonEmbeddingDatabase
+from ..utils.database import PersonEmbeddingDatabase
+from ..adapters.cross_camera_adapter import apply_cross_camera_adaptation, compute_cross_camera_similarity, domain_adapter
 import config
 
 class MultiModalIdentifier:
-    """Enhanced identification system using both face and gait biometrics"""
+    """Enhanced identification system using both face and gait biometrics with cross-camera support"""
     
-    def __init__(self, database: PersonEmbeddingDatabase):
+    def __init__(self, database_handler):
         """
-        Initialize with database
+        Initialize with database handler
         
         Args:
-            database: Person embedding database with both face and gait embeddings
+            database_handler: Database handler with both face and gait identification methods
         """
-        self.database = database
+        self.database = database_handler
         self.sequence_history = {}  # For temporal consistency checks
         self.face_weight = getattr(config, 'FACE_WEIGHT', 0.7)  # Weight for face recognition
         self.gait_weight = getattr(config, 'GAIT_WEIGHT', 0.3)  # Weight for gait recognition
         self.require_both = getattr(config, 'REQUIRE_BOTH_MODALITIES', False)
+        
+        # Cross-camera adaptation settings
+        self.enable_cross_camera = getattr(config, 'ENABLE_CROSS_CAMERA_ADAPTATION', True)
+        self.camera_adaptive_similarity = getattr(config, 'CAMERA_ADAPTIVE_SIMILARITY', True)
+        self.current_camera_id = "default"  # Current camera identifier
+    
+    def set_camera_id(self, camera_id: str):
+        """Set the current camera identifier for domain adaptation"""
+        self.current_camera_id = camera_id
+    
+    def collect_embeddings_for_adaptation(self, gait_embedding: Optional[np.ndarray] = None,
+                                        face_embedding: Optional[np.ndarray] = None):
+        """
+        Collect embeddings for cross-camera domain adaptation
+        
+        Args:
+            gait_embedding: Gait embedding to collect
+            face_embedding: Face embedding to collect
+        """
+        if self.enable_cross_camera:
+            embeddings = {}
+            if gait_embedding is not None:
+                embeddings['gait'] = gait_embedding
+            if face_embedding is not None:
+                embeddings['face'] = face_embedding
+            
+            if embeddings:
+                domain_adapter.collect_camera_statistics(embeddings, self.current_camera_id)
+    
+    def fit_cross_camera_adaptation(self):
+        """Fit the cross-camera domain adaptation models"""
+        if self.enable_cross_camera:
+            domain_adapter.fit_domain_adaptation()
     
     def identify_with_proximity_awareness(self, track_id: str, 
                                         gait_embedding: Optional[np.ndarray] = None,
@@ -31,7 +65,7 @@ class MultiModalIdentifier:
                                         quality: float = 0.5,
                                         is_close_to_camera: bool = False) -> List[Tuple]:
         """
-        Identify person with awareness of proximity to camera
+        Identify person with awareness of proximity to camera and cross-camera adaptation
         
         Args:
             track_id: Track identifier
@@ -43,6 +77,15 @@ class MultiModalIdentifier:
         Returns:
             List of (person_id, confidence, name, quality) tuples
         """
+        # Apply cross-camera domain adaptation first
+        if self.enable_cross_camera:
+            # Collect embeddings for adaptation (in background)
+            self.collect_embeddings_for_adaptation(gait_embedding, face_embedding)
+            
+            # Apply adaptation to current embeddings
+            gait_embedding, face_embedding = apply_cross_camera_adaptation(
+                gait_embedding, face_embedding, self.current_camera_id
+            )
         # Store previous identification for this track
         previous_id = None
         previous_confidence = 0
@@ -405,3 +448,50 @@ class MultiModalIdentifier:
         """Determine if identification is reliable enough to accept"""
         confidence = self.get_identification_confidence(track_id)
         return confidence >= threshold
+    
+    def _get_cross_camera_fusion_weights(self, face_matches: List[Tuple], 
+                                       gait_matches: List[Tuple],
+                                       is_cross_camera: bool = False) -> Tuple[float, float]:
+        """
+        Get fusion weights adapted for cross-camera scenarios
+        
+        Args:
+            face_matches: Face recognition matches
+            gait_matches: Gait recognition matches  
+            is_cross_camera: Whether this is a cross-camera scenario
+            
+        Returns:
+            Tuple of (face_weight, gait_weight)
+        """
+        if is_cross_camera:
+            # Use cross-camera specific weights
+            base_face_weight = getattr(config, 'CROSS_CAMERA_FACE_WEIGHT', 0.8)
+            base_gait_weight = getattr(config, 'CROSS_CAMERA_GAIT_WEIGHT', 0.2)
+        else:
+            # Use same-camera weights
+            base_face_weight = getattr(config, 'SAME_CAMERA_FACE_WEIGHT', 0.7)
+            base_gait_weight = getattr(config, 'SAME_CAMERA_GAIT_WEIGHT', 0.3)
+        
+        # Adaptive weighting based on match quality
+        face_quality = np.mean([match[1] for match in face_matches]) if face_matches else 0.0
+        gait_quality = np.mean([match[1] for match in gait_matches]) if gait_matches else 0.0
+        
+        # Boost weights based on relative quality
+        if face_quality > 0 and gait_quality > 0:
+            total_quality = face_quality + gait_quality
+            quality_face_weight = (face_quality / total_quality) * 0.3
+            quality_gait_weight = (gait_quality / total_quality) * 0.3
+            
+            adaptive_face_weight = base_face_weight * 0.7 + quality_face_weight
+            adaptive_gait_weight = base_gait_weight * 0.7 + quality_gait_weight
+            
+            # Normalize
+            total_weight = adaptive_face_weight + adaptive_gait_weight
+            if total_weight > 0:
+                adaptive_face_weight /= total_weight
+                adaptive_gait_weight /= total_weight
+        else:
+            adaptive_face_weight = base_face_weight
+            adaptive_gait_weight = base_gait_weight
+        
+        return adaptive_face_weight, adaptive_gait_weight

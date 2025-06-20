@@ -1,202 +1,374 @@
 """
-Configuration settings for the tracking application
+Configuration settings for the multimodal gait and face recognition system.
+
+This module contains all configuration parameters organized by functionality:
+- Model paths and selection
+- Processing parameters  
+- Recognition thresholds
+- Multimodal fusion settings
+- System performance settings
 """
 
-# Paths
-MODEL_PATH = 'weights/yolo11m.pt'
-SEG_MODEL_PATH = 'weights/yolo11l-seg.pt'
-# Model Selection and Configuration
-GAIT_MODEL_TYPE = "DeepGaitV2"  # Use DeepGaitV2 for P3D mode
-GAIT_MODEL_BACKBONE_MODE = "p3d"  # Ensure P3D backbone is used (if supported by your loader)
+# ==============================================================================
+# MODEL CONFIGURATION
+# ==============================================================================
+
+# Model Selection
+GAIT_MODEL_TYPE = "DeepGaitV2"  # Options: "DeepGaitV2", "GaitBase", "SkeletonGaitPP"
+GAIT_MODEL_BACKBONE_MODE = "p3d"  # Backbone mode (if supported by loader)
+
+# Model Paths
+MODEL_PATH = 'weights/yolo11m.pt'  # YOLO detection model
+SEG_MODEL_PATH = 'weights/yolo11l-seg.pt'  # YOLO segmentation model
 DEEPGAITV2_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"
 GAITBASE_MODEL_PATH = "weights/GaitBase_DA-180000.pt"
 SKELETONGAITPP_MODEL_PATH = "weights/SkeletonGaitPP_30_DA-50000.pt"
+
+# ==============================================================================
+# INPUT/OUTPUT PATHS
+# ==============================================================================
+
+# Video Input
 VIDEO_DIR = '../Person_new/input'
-VIDEO_NAME = 'n.mp4'
-VIDEO_PATH = f"{VIDEO_DIR}/{VIDEO_NAME}"  # Path to the input video file
+VIDEO_NAME = '3c.mp4'
+VIDEO_PATH = f"{VIDEO_DIR}/{VIDEO_NAME}"
 
-# Data storage paths
-DATA_DIR = f"data_{GAIT_MODEL_TYPE}"  # Directory for storing data files like databases
-OUTPUT_VIDEO_PATH = f"output/processed_video_{VIDEO_NAME}_{GAIT_MODEL_TYPE}.mp4"  # Path for saving output video
-OUTPUT_FRAMES_DIR = "output/frames"  # Directory for saving individual frames
+# Data Storage
+DATA_DIR = f"data_{GAIT_MODEL_TYPE}"  # Database storage directory
+OUTPUT_VIDEO_PATH = f"output/processed_video_{VIDEO_NAME}_{GAIT_MODEL_TYPE}.mp4"
+OUTPUT_FRAMES_DIR = "output/frames"
+OUTPUT_DIR = "output/statistics"
 
-# Person identification settings - Basic optimization for CCTV
-# Start with more permissive settings that work well for your DeepGaitV2
-SIMILARITY_THRESHOLD = 0.20  # Slightly higher for better discrimination
-IDENTIFICATION_THRESHOLD = 0.15  # Balanced threshold for reliability
-SPATIAL_CONFLICT_THRESHOLD = 150  # Pixel distance threshold for spatial conflict detection
+# ==============================================================================
+# RECOGNITION THRESHOLDS & PARAMETERS
+# ==============================================================================
 
-# CCTV-specific quality settings - Basic level
-MIN_SEQUENCE_LENGTH = 15  # Reasonable minimum for CCTV
-MIN_QUALITY_THRESHOLD = 0.40  # More permissive for CCTV quality
-HIGH_QUALITY_THRESHOLD = 0.60  # Realistic for CCTV expectations
+# Basic Recognition Thresholds
+SIMILARITY_THRESHOLD = 0.15  # Gait similarity threshold
+IDENTIFICATION_THRESHOLD = 0.15  # General identification threshold
+RECOGNITION_CONFIDENCE_THRESHOLD = 0.7  # Minimum confidence for positive ID
+SPATIAL_CONFLICT_THRESHOLD = 150  # Pixel distance for spatial conflict detection
 
-# Sampling method configuration
+# Quality Thresholds
+MIN_SEQUENCE_LENGTH = 15  # Minimum frames for gait analysis
+MIN_QUALITY_THRESHOLD = 0.40  # Minimum quality for processing
+HIGH_QUALITY_THRESHOLD = 0.60  # Threshold for high-quality sequences
+NEW_PERSON_QUALITY_THRESHOLD = 0.60  # Minimum quality to create new person
+
+# ==============================================================================
+# IDENTIFICATION METHODS & SAMPLING
+# ==============================================================================
+
+# Sampling Configuration
 IDENTIFICATION_METHOD = "nucleus"  # Options: "top_k" or "nucleus"
-NUCLEUS_TOP_P = 0.85  # For nucleus sampling: cumulative probability mass (0.8-0.95 recommended)
+NUCLEUS_TOP_P = 0.90  # Cumulative probability mass for nucleus sampling
 NUCLEUS_MIN_CANDIDATES = 1  # Minimum candidates to return
 NUCLEUS_MAX_CANDIDATES = 5  # Maximum candidates to return
-TOP_K_CANDIDATES = 5  # For top-k sampling: fixed number of candidates
+TOP_K_CANDIDATES = 5  # Fixed number of candidates for top-k sampling
 
-# Advanced nucleus sampling parameters for close similarities
-NUCLEUS_CLOSE_SIM_THRESHOLD = 0.08  # Increased for CCTV scenarios with similar poses
-NUCLEUS_AMPLIFICATION_FACTOR = 35.0  # Higher amplification for better discrimination
-NUCLEUS_QUALITY_WEIGHT = 0.8  # Increased quality weighting for CCTV scenarios
-NUCLEUS_ENHANCED_RANKING = True  # Enable multi-factor ranking for close similarities
+# Advanced Nucleus Sampling Parameters
+NUCLEUS_CLOSE_SIM_THRESHOLD = 0.08  # Threshold for close similarities
+NUCLEUS_AMPLIFICATION_FACTOR = 35.0  # Amplification for discrimination
+NUCLEUS_QUALITY_WEIGHT = 0.8  # Quality weighting factor
+NUCLEUS_ENHANCED_RANKING = True  # Enable multi-factor ranking
 
-# CCTV-specific enhancement parameters
-TEMPORAL_CONSISTENCY_WEIGHT = 0.7  # Higher weight for temporal consistency
-ENSEMBLE_IDENTIFICATION = True  # Enable ensemble methods for better accuracy
-MULTI_SEQUENCE_MATCHING = True  # Use multiple sequences per person for matching
+# ==============================================================================
+# FACE RECOGNITION CONFIGURATION
+# ==============================================================================
 
-# Processing limits
-MAX_FRAMES = 600  # Increased for better gallery building
-SAVE_VIDEO = True  # Whether to save processed video
-SAVE_FRAMES = False  # Whether to save individual frames
-SHOW_DISPLAY = True  # Whether to show display window
-VERBOSE = False  # Enable detailed logs for debugging
-SHOW_PROGRESS = True  # Whether to show progress bar
+# Face Recognition Settings
+ENABLE_FACE_RECOGNITION = True  # Enable/disable face recognition
+FACE_DETECTION_MODEL = 'buffalo_l'  # InsightFace model
+FACE_RECOGNITION_MODEL = 'buffalo_l'  # Face recognition model
+FACE_DETECTION_SIZE = (320, 320)  # Detection resolution
+FACE_THRESHOLD = 0.3  # Face recognition similarity threshold (updated)
+FACE_QUALITY_THRESHOLD = 0.15  # Minimum face quality threshold
 
-# Tracker settings
+# Face Processing Parameters
+FACE_CACHE_SIZE = 30  # Number of faces to cache per track
+FACE_QUALITY_WINDOW = 10  # Frames to wait before selecting best face
+FACE_CROP_UPPER_BODY_RATIO = 0.6  # Focus on upper body for detection
+FACE_MIN_SIZE = 50  # Minimum face size in pixels
+FACE_MAX_EDGE_DISTANCE = 10  # Min distance from crop edge for valid face
+FACE_BLUR_THRESHOLD = 500  # Minimum Laplacian variance for sharpness
+
+# Face Recognition Enhancement
+FACE_EMBEDDING_NORMALIZATION = True  # Normalize face embeddings
+FACE_TEMPORAL_CONSISTENCY = True  # Use temporal consistency
+
+# ==============================================================================
+# MULTIMODAL FUSION CONFIGURATION
+# ==============================================================================
+
+# Fusion Weights (updated based on audit)
+FACE_WEIGHT = 0.7  # Face recognition weight in fusion (increased)
+GAIT_WEIGHT = 0.3  # Gait recognition weight in fusion (decreased)
+REQUIRE_BOTH_MODALITIES = False  # Require both modalities for ID
+
+# Proximity-Aware Recognition
+PROXIMITY_AWARENESS = True  # Enable proximity-aware identification
+PROXIMITY_THRESHOLD = 100  # Pixel height for close-to-camera detection
+DISTANT_IDENTITY_CHANGE_THRESHOLD = 0.3  # Extra confidence needed when distant
+PROXIMITY_FACE_PRIORITY = True  # Prioritize face when close to camera
+
+# ==============================================================================
+# CROSS-CAMERA DOMAIN ADAPTATION (ENHANCED)
+# ==============================================================================
+
+# Current Camera Configuration
+CURRENT_CAMERA_ID = "camera_1"  # Set this to different values for different cameras
+
+# Domain Adaptation Settings
+ENABLE_CROSS_CAMERA_ADAPTATION = True  # Enable cross-camera domain adaptation
+ENABLE_PCA_WHITENING = True  # Enable PCA whitening for noise reduction
+ENABLE_CROSS_CAMERA_NORM = True  # Enable cross-camera normalization
+MIN_ADAPTATION_SAMPLES = 5  # Reduced for faster adaptation
+
+# Camera-Invariant Processing
+ENABLE_CAMERA_INVARIANT_PREPROCESSING = True  # Enable preprocessing
+CAMERA_ADAPTIVE_SIMILARITY = True  # Use camera-adaptive similarity metrics
+DOMAIN_ADAPTATION_STRENGTH = 0.8  # Increased strength for better adaptation (0-1)
+
+# Enhanced Cross-Camera Similarity Thresholds
+CROSS_CAMERA_GAIT_THRESHOLD = 0.12  # More lenient for gait across cameras
+CROSS_CAMERA_FACE_THRESHOLD = 0.30  # More lenient for face across cameras
+SAME_CAMERA_BONUS = 0.15  # Increased bonus for same-camera matches
+
+# Advanced Domain Adaptation Parameters
+CROSS_CAMERA_EMBEDDING_SMOOTHING = 0.7  # Smoothing factor for embeddings
+CAMERA_BIAS_CORRECTION = True  # Enable camera bias correction
+TEMPORAL_DOMAIN_ADAPTATION = True  # Enable temporal adaptation
+ADAPTIVE_THRESHOLD_SCALING = True  # Scale thresholds based on camera distance
+
+# Multi-Camera Fusion Weights
+CROSS_CAMERA_FACE_WEIGHT = 0.8  # Higher weight for face in cross-camera
+CROSS_CAMERA_GAIT_WEIGHT = 0.2  # Lower weight for gait in cross-camera
+SAME_CAMERA_FACE_WEIGHT = 0.7   # Standard weight for same camera
+SAME_CAMERA_GAIT_WEIGHT = 0.3   # Standard weight for same camera
+
+# ==============================================================================
+# SYSTEM PERFORMANCE & PROCESSING
+# ==============================================================================
+
+# Processing Limits
+MAX_FRAMES = 600  # Maximum frames to process
+TEMPORAL_CONSISTENCY_WEIGHT = 0.7  # Weight for temporal consistency
+ENSEMBLE_IDENTIFICATION = True  # Enable ensemble methods
+MULTI_SEQUENCE_MATCHING = True  # Use multiple sequences per person
+
+# Output Control
+SAVE_VIDEO = True  # Save processed video
+SAVE_FRAMES = False  # Save individual frames
+SHOW_DISPLAY = True  # Show display window
+VERBOSE = False  # Enable detailed logging
+SHOW_PROGRESS = True  # Show progress bar
+SHOW_STATISTICS_PLOTS = False  # Show statistics plots
+
+# ==============================================================================
+# GAIT MODEL CONFIGURATIONS
+# ==============================================================================
+
+# DeepGaitV2 Configuration
+DEEPGAITV2_CONFIG = {
+    'Backbone': {
+        'in_channels': 1,
+        'mode': '2d',  # 2D mode for MPS compatibility
+        'layers': [1, 4, 4, 1],  # Layer configuration
+        'channels': [64, 128, 256, 512]  # Channel progression
+    },
+    'SeparateBNNecks': {
+        'class_num': 3000  # Number of identities in training set
+    },
+    'use_emb2': False  # Use second embedding layer output
+}
+
+# GaitBase Configuration
+GAITBASE_CONFIG = {
+    'backbone_cfg': {
+        'type': 'ResNet9',
+        'block': 'BasicBlock',
+        'channels': [64, 128, 256, 512],
+        'layers': [1, 1, 1, 1],
+        'strides': [1, 2, 2, 1],
+        'maxpool': False
+    },
+    'SeparateFCs': {
+        'in_channels': 512,
+        'out_channels': 256,
+        'parts_num': 16
+    },
+    'SeparateBNNecks': {
+        'class_num': 3000,
+        'in_channels': 256,
+        'parts_num': 16
+    },
+    'bin_num': [16]
+}
+
+# SkeletonGait++ Configuration
+SKELETONGAITPP_CONFIG = {
+    'Backbone': {
+        'in_channels': 3,  # 2 pose channels + 1 silhouette
+        'blocks': [1, 4, 4, 1],
+        'C': 2
+    },
+    'SeparateBNNecks': {
+        'class_num': 3000
+    },
+    'use_emb2': False
+}
+
+# SkeletonGaitPP Multimodal Preprocessing
+SKELETONGAITPP_MULTIMODAL_PREPROCESSING = {
+    'enabled': True,
+    'pose_intensity': 0.8,
+    'pose_sigma': 2.0,
+    'quality_threshold': 0.35,
+    'temporal_consistency': True,
+    'pose_amplification': 1.5,
+}
+
+# ==============================================================================
+# TRACKER & VISUALIZATION SETTINGS
+# ==============================================================================
+
+# Tracker Configuration
 TRACKER_CONFIG = {
     'frame_rate': 30,
-    'track_thresh': 0.6, 
-    'high_thresh': 0.6, 
+    'track_thresh': 0.6,
+    'high_thresh': 0.6,
     'match_thresh': 0.7
 }
 
-# Visualization settings
+# Visualization Configuration
 VISUALIZATION_CONFIG = {
     'box_color': (0, 255, 0),  # Green
     'text_color': (0, 255, 0),  # Green
-    'fps_color': (0, 0, 255),   # Red
+    'fps_color': (0, 0, 255),  # Red
     'line_thickness': 2,
     'font_scale': 0.5,
     'fps_font_scale': 0.8
 }
 
-# Silhouette extraction settings - Enhanced for better accuracy
+# ==============================================================================
+# SILHOUETTE EXTRACTION SETTINGS
+# ==============================================================================
+
 SILHOUETTE_CONFIG = {
-    'min_track_frames': 12,        # Reduced from 15 for more permissive tracking
-    'confidence_threshold': 0.6,   # Reduced for CCTV footage
-    'min_quality_score': 0.3,      # More permissive quality threshold  
+    # Basic Parameters
+    'min_track_frames': 12,
+    'confidence_threshold': 0.6,
+    'min_quality_score': 0.3,
     'resolution': (64, 44),
-    'window_size': 25,             # Reduced from 30 for easier sequence finding
-    'max_cache_size': 150,         # Increased for better temporal consistency
+    'window_size': 25,
+    'max_cache_size': 150,
     
-    # Enhanced morphological operation settings
-    'small_kernel_size': 3,        # Reduced from 5 to preserve details
-    'use_bilateral_filter': True,  # Enable edge preservation
-    'bilateral_d': 5,              # Bilateral filter neighborhood
-    'bilateral_sigma_color': 50,   # Bilateral filter color sigma
-    'bilateral_sigma_space': 50,   # Bilateral filter space sigma
+    # Morphological Operations
+    'small_kernel_size': 3,
+    'use_bilateral_filter': True,
+    'bilateral_d': 5,
+    'bilateral_sigma_color': 50,
+    'bilateral_sigma_space': 50,
     
-    # Temporal consistency settings
+    # Temporal Consistency
     'temporal_consistency_enabled': True,
-    'temporal_iou_threshold': 0.7, # IoU threshold for temporal blending
-    'temporal_blend_alpha': 0.8,   # Weight for current frame vs previous
+    'temporal_iou_threshold': 0.7,
+    'temporal_blend_alpha': 0.8,
 }
 
-# DeepGaitV2 Configuration
-# This is a CNN-based model with excellent performance on various datasets
-DEEPGAITV2_CONFIG = {
-    'Backbone': {
-        'in_channels': 1,
-        'mode': '2d',  # Changed from 'p3d' to '2d' for MPS compatibility and better performance
-        'layers': [1, 4, 4, 1],  # Layer configuration: [layer1, layer2, layer3, layer4]
-        'channels': [64, 128, 256, 512]  # Channel progression through layers
-    },
-    'SeparateBNNecks': {
-        'class_num': 3000  # Number of identities in training set - adjust based on your trained model
-    },
-    'use_emb2': False  # Whether to use second embedding layer output for inference
+# ==============================================================================
+# QUALITY ASSESSMENT CONFIGURATION
+# ==============================================================================
+
+QUALITY_ASSESSOR_CONFIG = {
+    # Sequence Parameters
+    'min_sequence_length': 15,
+    'max_sequence_length': 120,
+    'gait_cycle_min_frames': 12,
+    
+    # Silhouette Quality
+    'min_silhouette_area': 800,
+    'max_silhouette_area': 40000,
+    'min_aspect_ratio': 0.4,
+    'max_aspect_ratio': 3.5,
+    
+    # Motion Analysis
+    'min_motion_threshold': 15,
+    'max_motion_threshold': 150,
+    'pose_variation_threshold': 0.35,
+    
+    # Consistency Checks
+    'consistency_threshold': 0.75,
+    'completeness_threshold': 0.8,
+    'sharpness_threshold': 60,
+    'temporal_consistency_window': 5,
 }
 
-# GaitBase Configuration 
-# This is the baseline model providing strong performance with simpler architecture
-GAITBASE_CONFIG = {
-    'backbone_cfg': {
-        'type': 'ResNet9',           # ResNet-9 backbone architecture
-        'block': 'BasicBlock',       # Use BasicBlock (no bottleneck)
-        'channels': [64, 128, 256, 512],  # Channel progression
-        'layers': [1, 1, 1, 1],      # Number of blocks per layer
-        'strides': [1, 2, 2, 1],     # Stride for each layer
-        'maxpool': False             # Disable max pooling in the first layer
-    },
-    'SeparateFCs': {
-        'in_channels': 512,          # Input channels from backbone
-        'out_channels': 256,         # Output feature dimension
-        'parts_num': 16              # Number of horizontal parts for HPP
-    },
-    'SeparateBNNecks': {
-        'class_num': 3000,           # Number of identities - adjust based on your trained model
-        'in_channels': 256,          # Input channels from SeparateFCs
-        'parts_num': 16              # Number of parts (should match SeparateFCs)
-    },
-    'bin_num': [16]                  # Horizontal pooling pyramid bins
+# ==============================================================================
+# DATABASE CONFIGURATION
+# ==============================================================================
+
+PERSON_DATABASE_CONFIG = {
+    # Storage Limits
+    'max_embeddings_per_person': 8,
+    'auto_cleanup_threshold': 150,
+    'max_age_days': 30,
+    
+    # Quality Control
+    'min_quality_threshold': 0.55,
+    'quality_decay_factor': 0.95,
+    
+    # Similarity & Clustering
+    'similarity_threshold': 0.90,
+    'clustering_eps': 0.18,
+    'clustering_min_samples': 2,
+    
+    # Features
+    'duplicate_detection': True,
 }
 
-# SkeletonGait++ Configuration
-# This model uses both pose heatmaps and silhouettes for enhanced gait recognition
-SKELETONGAITPP_CONFIG = {
-    'Backbone': {
-        'in_channels': 3,            # 2 channels for pose heatmaps + 1 for silhouette
-        'blocks': [1, 4, 4, 1],      # Layer configuration: [layer1, layer2, layer3, layer4]
-        'C': 2                       # Channel multiplier
-    },
-    'SeparateBNNecks': {
-        'class_num': 3000            # Number of identities in training set - adjust based on your trained model
-    },
-    'use_emb2': False                # Whether to use second embedding layer output for inference
-}
+# ==============================================================================
+# METRIC LEARNING CONFIGURATION
+# ==============================================================================
 
-# SkeletonGaitPP Multimodal Preprocessing Configuration
-SKELETONGAITPP_MULTIMODAL_PREPROCESSING = {
+METRIC_LEARNING_CONFIG = {
     'enabled': True,
-    'pose_intensity': 0.8,           # Increased intensity for pose heatmaps
-    'pose_sigma': 2.0,               # Gaussian sigma for pose keypoints
-    'quality_threshold': 0.35,       # Lower threshold for synthetic pose data
-    'temporal_consistency': True,    # Enable temporal consistency for poses
-    'pose_amplification': 1.5,       # Amplify pose signals for better detection
+    'model_path': 'weights/metric_learning/best_metric_model.pth',
+    'input_dim': 512,
+    'embedding_dim': 256,
+    'similarity_threshold': 0.18,
+    'amplification_factor': 3.0
 }
 
-# Face embedding configuration
-ENABLE_FACE_RECOGNITION = True  # Enable face embedding extraction
-FACE_DETECTION_MODEL = 'buffalo_l'  # InsightFace model name
-FACE_RECOGNITION_MODEL = 'buffalo_l'  # Face recognition model
-FACE_DETECTION_SIZE = (320, 320)  # Detection resolution (smaller for performance)
-FACE_THRESHOLD = 0.15  # Face recognition similarity threshold
-FACE_QUALITY_THRESHOLD = 0.15  # Minimum face quality threshold (lowered for debugging)
+# Update nucleus sampling for metric embeddings
+NUCLEUS_AMPLIFICATION_FACTOR = 3.0  # Reduced for metric space
+NUCLEUS_CLOSE_SIM_THRESHOLD = 0.10  # Adjusted for metric space
 
-# Multi-modal fusion weights (adaptive weights will be used based on quality)
-FACE_WEIGHT = 0.7  # Base weight for face recognition in multi-modal fusion
-GAIT_WEIGHT = 0.3  # Base weight for gait recognition in multi-modal fusion
-REQUIRE_BOTH_MODALITIES = False  # If True, require both face and gait for identification
+# ==============================================================================
+# WARNING SUPPRESSION CONFIGURATION
+# ==============================================================================
 
-# Face embedding settings
-FACE_CACHE_SIZE = 5  # Number of faces to cache per track
-FACE_QUALITY_WINDOW = 2  # Frames to wait before selecting best face
-FACE_CROP_UPPER_BODY_RATIO = 0.6  # Focus on upper body for face detection
-FACE_MIN_SIZE = 50  # Minimum face size in pixels
-FACE_MAX_EDGE_DISTANCE = 10  # Minimum distance from crop edge for valid face
+# Suppress common warnings from dependencies
+SUPPRESS_WARNINGS = True  # Enable/disable warning suppression
+SUPPRESSED_WARNING_CATEGORIES = [
+    'FutureWarning',  # InsightFace rcond warnings
+    'UserWarning',    # ONNX provider warnings
+    'DeprecationWarning'  # Deprecated function warnings
+]
 
-# Enhanced face recognition settings
-FACE_BLUR_THRESHOLD = 500  # Minimum Laplacian variance for non-blurry faces
-FACE_EMBEDDING_NORMALIZATION = True  # Normalize face embeddings for better similarity
-FACE_TEMPORAL_CONSISTENCY = True  # Use temporal consistency for face embeddings
-FACE_CACHE_SIZE = 30  # Number of faces to cache per track
-FACE_QUALITY_WINDOW = 10  # Frames to wait before selecting best face
-FACE_CROP_UPPER_BODY_RATIO = 0.6  # Focus on upper body for face detection
+# Specific warning patterns to suppress
+SUPPRESSED_WARNING_PATTERNS = [
+    ".*rcond.*",  # NumPy rcond parameter warnings
+    ".*provider.*not in available.*",  # ONNX runtime provider warnings
+    ".*xFormers.*",  # xFormers availability warnings
+]
 
-# Proximity-aware identification parameters
-PROXIMITY_AWARENESS = True  # Enable/disable proximity-aware identification
-PROXIMITY_THRESHOLD = 100  # Pixel height threshold to consider subject close to camera
-DISTANT_IDENTITY_CHANGE_THRESHOLD = 0.3  # Additional confidence needed to change identity when far
-PROXIMITY_FACE_PRIORITY = True  # Prioritize face recognition when close to camera
+# ==============================================================================
+# HELPER FUNCTIONS
+# ==============================================================================
 
-# Get the appropriate config and model path based on selected model type
 def get_current_model_config():
-    """Get the configuration for the currently selected model"""
+    """Get the configuration for the currently selected model."""
     if GAIT_MODEL_TYPE == "DeepGaitV2":
         return DEEPGAITV2_CONFIG
     elif GAIT_MODEL_TYPE == "GaitBase":
@@ -204,10 +376,10 @@ def get_current_model_config():
     elif GAIT_MODEL_TYPE == "SkeletonGaitPP":
         return SKELETONGAITPP_CONFIG
     else:
-        raise ValueError(f"Unknown model type: {GAIT_MODEL_TYPE}. Use 'DeepGaitV2', 'GaitBase', or 'SkeletonGaitPP'")
+        raise ValueError(f"Unknown model type: {GAIT_MODEL_TYPE}")
 
 def get_current_model_path():
-    """Get the model path for the currently selected model"""
+    """Get the model path for the currently selected model."""
     if GAIT_MODEL_TYPE == "DeepGaitV2":
         return DEEPGAITV2_MODEL_PATH
     elif GAIT_MODEL_TYPE == "GaitBase":
@@ -215,62 +387,12 @@ def get_current_model_path():
     elif GAIT_MODEL_TYPE == "SkeletonGaitPP":
         return SKELETONGAITPP_MODEL_PATH
     else:
-        raise ValueError(f"Unknown model type: {GAIT_MODEL_TYPE}. Use 'DeepGaitV2', 'GaitBase', or 'SkeletonGaitPP'")
+        raise ValueError(f"Unknown model type: {GAIT_MODEL_TYPE}")
 
-# Dynamic config assignment based on selected model
+# ==============================================================================
+# DYNAMIC CONFIGURATION ASSIGNMENT
+# ==============================================================================
+
+# Assign configurations based on selected model
 GAIT_RECOGNIZER_CONFIG = get_current_model_config()
 GAIT_MODEL_PATH = get_current_model_path()
-
-# Quality Assessment Configuration
-QUALITY_ASSESSOR_CONFIG = {
-    'min_sequence_length': 15,      # Minimum frames for reliable gait analysis
-    'max_sequence_length': 120,     # Maximum frames to avoid redundancy
-    'min_silhouette_area': 800,     # Minimum silhouette area in pixels
-    'max_silhouette_area': 40000,   # Maximum silhouette area in pixels
-    'min_aspect_ratio': 0.4,        # Minimum height/width ratio
-    'max_aspect_ratio': 3.5,        # Maximum height/width ratio
-    'min_motion_threshold': 15,     # Minimum motion between frames
-    'max_motion_threshold': 150,    # Maximum motion (too fast movement)
-    'consistency_threshold': 0.75,  # Silhouette consistency across frames
-    'completeness_threshold': 0.8,  # Percentage of complete silhouettes
-    'sharpness_threshold': 60,      # Minimum sharpness (Laplacian variance)
-    'temporal_consistency_window': 5, # Window for temporal consistency check
-    'gait_cycle_min_frames': 12,    # Minimum frames for one gait cycle
-    'pose_variation_threshold': 0.35, # Minimum pose variation for gait analysis
-}
-
-# Person Database Configuration
-PERSON_DATABASE_CONFIG = {
-    'max_embeddings_per_person': 8,     # Maximum embeddings to store per person
-    'min_quality_threshold': 0.55,      # Minimum quality score to store
-    'similarity_threshold': 0.90,       # Threshold for considering embeddings similar (increased for better discrimination)
-    'clustering_eps': 0.18,             # DBSCAN epsilon for clustering
-    'clustering_min_samples': 2,        # DBSCAN minimum samples
-    'auto_cleanup_threshold': 150,      # Auto cleanup when database exceeds this size
-    'duplicate_detection': True,        # Enable duplicate detection
-    'quality_decay_factor': 0.95,      # Quality decay for old embeddings
-    'max_age_days': 30,                # Maximum age for embeddings (days)
-}
-
-# Enhanced recognition thresholds
-RECOGNITION_CONFIDENCE_THRESHOLD = 0.7  # Minimum confidence for positive identification
-HIGH_QUALITY_THRESHOLD = 0.60           # Threshold for high-quality sequences (adjusted for real video)
-NEW_PERSON_QUALITY_THRESHOLD = 0.60     # Minimum quality to create new person (adjusted for real video)
-
-# Statistics settings
-OUTPUT_DIR = "output/statistics"
-SHOW_STATISTICS_PLOTS = False  # Set to True to show plots on screen
-
-# Metric Learning Configuration
-METRIC_LEARNING_CONFIG = {
-    'enabled': True,                               # Whether to use metric learning
-    'model_path': 'weights/metric_learning/best_metric_model.pth',  # Path to trained model
-    'input_dim': 512,                              # Input dimension (from original embeddings)
-    'embedding_dim': 256,                          # Output dimension
-    'similarity_threshold': 0.18,                  # Similarity threshold in new metric space
-    'amplification_factor': 3.0                    # Lower amplification (was 35.0)
-}
-
-# Update nucleus sampling parameters to work with metric embeddings
-NUCLEUS_AMPLIFICATION_FACTOR = 3.0                 # Reduced from 35.0
-NUCLEUS_CLOSE_SIM_THRESHOLD = 0.10                 # Adjusted for metric space

@@ -2,7 +2,7 @@
 Track management for the gait recognition system
 """
 
-from utils.device import vprint
+from src.utils.device import vprint
 
 class TrackManager:
     """Manages track data and lifecycle"""

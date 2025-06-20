@@ -4,7 +4,7 @@ Keyboard input handler for the gait recognition system
 
 import cv2
 import os
-from utils.device import vprint
+from src.utils.device import vprint
 
 class KeyboardHandler:
     """Handles keyboard input for interactive commands"""

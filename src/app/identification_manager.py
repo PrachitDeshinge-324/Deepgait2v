@@ -2,8 +2,9 @@
 Person identification management for gait recognition system
 """
 
-from utils.device import vprint
+from ..utils.device import vprint
 from datetime import datetime
+from ..identification.multimodal_identifier import MultiModalIdentifier
 
 class IdentificationManager:
     """Manages person identification"""
@@ -14,6 +15,42 @@ class IdentificationManager:
         self.database_handler = database_handler  # DatabaseHandler instance
         self.person_db = database_handler.person_db  # PersonDatabase instance for direct access
         self.next_person_id = next_person_id
+        
+        # Initialize multimodal identifier with cross-camera adaptation
+        # Note: MultiModalIdentifier expects a database handler, not just the PersonDatabase
+        self.multimodal_identifier = MultiModalIdentifier(self.database_handler)
+        
+        # Configure cross-camera adaptation
+        if hasattr(config, 'ENABLE_CROSS_CAMERA_ADAPTATION') and config.ENABLE_CROSS_CAMERA_ADAPTATION:
+            self.multimodal_identifier.enable_cross_camera = True
+        
+        # Set camera ID if available
+        if hasattr(config, 'CURRENT_CAMERA_ID'):
+            self.multimodal_identifier.set_camera_id(config.CURRENT_CAMERA_ID)
+        else:
+            self.multimodal_identifier.set_camera_id("default_camera")
+            
+        # Collect embeddings for adaptation from existing database
+        self._initialize_cross_camera_adaptation()
+        
+    def _initialize_cross_camera_adaptation(self):
+        """Initialize cross-camera adaptation with existing database"""
+        if not self.multimodal_identifier.enable_cross_camera:
+            return
+            
+        # Collect embeddings from existing database for adaptation
+        for person_id, person_data in self.person_db.persons.items():
+            gait_embedding = person_data.get('embedding')
+            face_embedding = person_data.get('face_embedding')
+            
+            if gait_embedding is not None or face_embedding is not None:
+                self.multimodal_identifier.collect_embeddings_for_adaptation(
+                    gait_embedding, face_embedding
+                )
+        
+        # Fit the adaptation if we have enough samples
+        self.multimodal_identifier.fit_cross_camera_adaptation()
+        vprint("✅ Cross-camera domain adaptation initialized")
         
     def process_identification(self, track_id, embedding, face_embedding, quality, active_track_ids, track_identities):
         """
@@ -58,6 +95,12 @@ class IdentificationManager:
                 )
                 vprint(f"Updated person {current_person_id} with gait embedding only")
             track_identities[track_id]['quality'] = quality
+            
+            # Collect updated embeddings for cross-camera adaptation
+            if self.multimodal_identifier.enable_cross_camera:
+                self.multimodal_identifier.collect_embeddings_for_adaptation(
+                    embedding, face_embedding
+                )
     
     def _create_new_identity(self, track_id, embedding, face_embedding, quality, active_track_ids, track_identities):
         """Identify track or create new identity"""
@@ -87,60 +130,19 @@ class IdentificationManager:
             self._create_new_person(track_id, embedding, face_embedding, quality, track_identities)
     
     def _get_identification_matches(self, track_id, embedding, face_embedding, quality):
-        """Get identification matches using configured method with multimodal support"""
-        match_threshold = self.config.IDENTIFICATION_THRESHOLD
+        """Get identification matches using the multimodal identifier with cross-camera adaptation"""
         
-        # Check if we have both modalities
-        has_face = face_embedding is not None
-        has_gait = embedding is not None
+        # Use the multimodal identifier which includes cross-camera adaptation
+        matches = self.multimodal_identifier.identify_with_proximity_awareness(
+            track_id=track_id,
+            gait_embedding=embedding,
+            face_embedding=face_embedding, 
+            quality=quality,
+            is_close_to_camera=False  # Could be made dynamic based on detection size
+        )
         
-        # Use multimodal identification if both are available
-        if has_face and has_gait:
-            vprint(f"Track {track_id}: Using multimodal identification (face + gait)")
-            matches = self.database_handler.identify_person_multimodal(
-                gait_embedding=embedding,
-                face_embedding=face_embedding,
-                gait_weight=self.config.GAIT_WEIGHT,
-                face_weight=self.config.FACE_WEIGHT,
-                face_threshold=self.config.FACE_THRESHOLD,
-                gait_threshold=match_threshold,
-                require_both=self.config.REQUIRE_BOTH_MODALITIES,
-                top_k=self.config.TOP_K_CANDIDATES
-            )
-        elif has_face:
-            vprint(f"Track {track_id}: Using face-only identification")
-            matches = self.database_handler.identify_person_face(
-                face_embedding,
-                top_k=self.config.TOP_K_CANDIDATES,
-                threshold=self.config.FACE_THRESHOLD
-            )
-        elif has_gait:
-            # Use appropriate gait identification method
-            if self.config.IDENTIFICATION_METHOD == "nucleus":
-                matches = self.person_db.identify_person_adaptive(
-                    embedding, 
-                    method='nucleus',
-                    top_p=self.config.NUCLEUS_TOP_P,
-                    min_candidates=self.config.NUCLEUS_MIN_CANDIDATES,
-                    max_candidates=self.config.NUCLEUS_MAX_CANDIDATES,
-                    threshold=match_threshold,
-                    close_sim_threshold=self.config.NUCLEUS_CLOSE_SIM_THRESHOLD,
-                    amplification_factor=self.config.NUCLEUS_AMPLIFICATION_FACTOR,
-                    quality_weight=self.config.NUCLEUS_QUALITY_WEIGHT,
-                    enhanced_ranking=self.config.NUCLEUS_ENHANCED_RANKING
-                )
-                vprint(f"Track {track_id}: Using enhanced nucleus sampling (top_p={self.config.NUCLEUS_TOP_P})")
-            else:
-                matches = self.person_db.identify_person(
-                    embedding, 
-                    top_k=self.config.TOP_K_CANDIDATES, 
-                    threshold=match_threshold
-                )
-                vprint(f"Track {track_id}: Using top-k sampling (k={self.config.TOP_K_CANDIDATES})")
-        else:
-            vprint(f"Track {track_id}: No valid embeddings available")
-            matches = []
-            
+        vprint(f"Track {track_id}: Multimodal identifier returned {len(matches)} matches")
+        
         return matches
     
     def _get_assigned_person_ids(self, current_track_id, active_track_ids, track_identities):
@@ -177,6 +179,12 @@ class IdentificationManager:
                 )
             else:
                 self.person_db.update_person(person_id, embedding=embedding, quality=quality)
+                
+            # Collect updated embeddings for cross-camera adaptation
+            if self.multimodal_identifier.enable_cross_camera:
+                self.multimodal_identifier.collect_embeddings_for_adaptation(
+                    embedding, face_embedding
+                )
     
     def _create_new_person(self, track_id, embedding, face_embedding, quality, track_identities):
         """Create a new person identity"""
@@ -211,6 +219,12 @@ class IdentificationManager:
                 metadata={'first_seen': datetime.now().isoformat()}
             )
             vprint(f"Added new person {new_person_name} with gait embedding only")
+        
+        # Collect new embeddings for cross-camera adaptation
+        if self.multimodal_identifier.enable_cross_camera:
+            self.multimodal_identifier.collect_embeddings_for_adaptation(
+                embedding, face_embedding
+            )
         
         # Assign to track
         track_identities[track_id] = {

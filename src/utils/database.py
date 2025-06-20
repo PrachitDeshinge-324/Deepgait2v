@@ -4,9 +4,33 @@ import pickle
 import time
 import faiss
 from datetime import datetime
-from typing import List, Dict, Tuple, Optional
+from typing import Optional, List, Dict, Tuple, Any
+def _get_cached_search_results(self, cache_key):
+    """Get cached search results if available"""
+    return self.search_cache.get(cache_key, None)
+    
+def _get_stored_embedding(self, person_id: str) -> Optional[np.ndarray]:
+    """Get stored embedding for a person"""
+    if person_id in self.embeddings:
+        return self.embeddings[person_id]
+    elif person_id in self.embedding_cache:
+        return self.embedding_cache[person_id]
+    else:
+        return None
 from typing import List, Tuple, Optional
 from .database_quality import EmbeddingQualityManager
+
+# Try to import cross-camera adapter
+try:
+    from ..adapters.cross_camera_adapter import compute_cross_camera_similarity
+    CROSS_CAMERA_AVAILABLE = True
+except ImportError:
+    CROSS_CAMERA_AVAILABLE = False
+    def compute_cross_camera_similarity(emb1, emb2, modality):
+        # Fallback to cosine similarity
+        emb1_norm = emb1 / (np.linalg.norm(emb1) + 1e-8)
+        emb2_norm = emb2 / (np.linalg.norm(emb2) + 1e-8)
+        return np.dot(emb1_norm, emb2_norm)
 
 class PersonEmbeddingDatabase:
     def __init__(self, dimension=256*16, use_cosine=True, metric_type=faiss.METRIC_L2, database_path=None, quality_threshold=0.4):
@@ -305,9 +329,11 @@ class PersonEmbeddingDatabase:
         return final_results
 
     def identify_person_nucleus(self, embedding, top_p=0.9, min_candidates=1, max_candidates=10, threshold=None, 
-                               close_sim_threshold=0.05, amplification_factor=0.1, quality_weight=0.5, enhanced_ranking=True):
+                               close_sim_threshold=0.05, amplification_factor=0.1, quality_weight=0.5, enhanced_ranking=True,
+                               use_cross_camera_similarity=None, modality='gait'):
         """
         Enhanced person identification using nucleus (top-p) sampling with improved handling of close similarities
+        and cross-camera domain adaptation
         
         Args:
             embedding: Input embedding for identification
@@ -319,6 +345,8 @@ class PersonEmbeddingDatabase:
             amplification_factor: Factor to amplify small differences in close similarities
             quality_weight: Weight for quality-based tie breaking
             enhanced_ranking: Whether to use multi-factor ranking for close similarities
+            use_cross_camera_similarity: Whether to use cross-camera aware similarity (auto-detect if None)
+            modality: 'gait' or 'face' for cross-camera similarity computation
             
         Returns:
             List of tuples: (person_id, similarity, name, quality)
@@ -327,12 +355,16 @@ class PersonEmbeddingDatabase:
         if len(self.index_to_id) == 0:
             print("Warning: Database is empty, no matches possible")
             return []
+        
+        # Auto-detect cross-camera similarity usage
+        if use_cross_camera_similarity is None:
+            use_cross_camera_similarity = CROSS_CAMERA_AVAILABLE
             
         # Reshape embedding for FAISS
         flat_emb = embedding.reshape(1, -1).astype(np.float32)
         
-        # Generate cache key for nucleus sampling
-        cache_key = f"nucleus_{self._hash_embedding(flat_emb)}_{top_p}_{threshold}"
+        # Generate cache key for nucleus sampling (include cross-camera flag)
+        cache_key = f"nucleus_{self._hash_embedding(flat_emb)}_{top_p}_{threshold}_{use_cross_camera_similarity}_{modality}"
         cached_results = self._get_cached_search_results(cache_key)
         if cached_results is not None:
             return cached_results
@@ -360,21 +392,37 @@ class PersonEmbeddingDatabase:
             if idx != -1:  # Valid index
                 person_id = self.index_to_id[idx]
                 
-                # Enhanced similarity calculation for nucleus sampling
-                if self.use_cosine:
-                    raw_distance = float(distances[0][i])
-                    # Keep raw cosine similarity for better discrimination
-                    # Don't map to [0,1] range here - preserve original values
-                    raw_similarity = raw_distance
-                    
-                    # For threshold comparison, still use [0,1] mapping
-                    threshold_similarity = (raw_distance + 1.0) / 2.0 if raw_distance >= -1.0 and raw_distance <= 1.0 else 0.5
-                else:
-                    # L2 distance: convert to similarity
-                    distance = distances[0][i]
-                    normalized_dist = distance / np.sqrt(self.dimension)
-                    raw_similarity = float(np.exp(-0.5 * normalized_dist**2))
-                    threshold_similarity = raw_similarity
+                # Use cross-camera aware similarity if enabled
+                if use_cross_camera_similarity:
+                    # Get stored embedding for this person
+                    stored_embedding = self._get_stored_embedding(person_id)
+                    if stored_embedding is not None:
+                        # Compute cross-camera aware similarity
+                        cross_camera_sim = compute_cross_camera_similarity(
+                            embedding, stored_embedding, modality
+                        )
+                        raw_similarity = cross_camera_sim
+                        threshold_similarity = cross_camera_sim
+                    else:
+                        # Fallback to FAISS results if stored embedding not available
+                        use_cross_camera_similarity = False
+                
+                if not use_cross_camera_similarity:
+                    # Standard similarity calculation for nucleus sampling
+                    if self.use_cosine:
+                        raw_distance = float(distances[0][i])
+                        # Keep raw cosine similarity for better discrimination
+                        # Don't map to [0,1] range here - preserve original values
+                        raw_similarity = raw_distance
+                        
+                        # For threshold comparison, still use [0,1] mapping
+                        threshold_similarity = (raw_distance + 1.0) / 2.0 if raw_distance >= -1.0 and raw_distance <= 1.0 else 0.5
+                    else:
+                        # L2 distance: convert to similarity
+                        distance = distances[0][i]
+                        normalized_dist = distance / np.sqrt(self.dimension)
+                        raw_similarity = float(np.exp(-0.5 * normalized_dist**2))
+                        threshold_similarity = raw_similarity
                 
                 # Only include results above threshold (using threshold-comparable similarity)
                 if threshold_similarity >= threshold:

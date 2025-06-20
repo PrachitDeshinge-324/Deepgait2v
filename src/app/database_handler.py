@@ -8,7 +8,7 @@ import json
 import numpy as np
 from datetime import datetime
 import shutil
-from utils.device import vprint
+from src.utils.device import vprint
 
 class PersonDatabase:
     """Person database with embedding storage and identification"""

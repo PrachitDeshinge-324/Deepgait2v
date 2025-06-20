@@ -1,15 +1,83 @@
-weights/*
-*.db
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.cache/
-.cache/*
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Model weights and data
+weights/
+data*/
+*.pt
+*.pth
+*.onnx
+*.caffemodel
+
+# Media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+
+# Output and cache
+output*/
 *.cache
 *.npy
-*.mp4
-data/
-data*/
-*.DS_Store
+*.npz
+*.pkl
+*.pickle
+.cache/
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Archives
 *.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Logs
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3

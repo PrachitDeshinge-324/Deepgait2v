@@ -3,11 +3,11 @@ import numpy as np
 import sys
 import os
 import logging
-from utils.device import get_best_device
+from src.utils.device import get_best_device
 import cv2
 
 # Add OpenGait to path to import the model
-sys.path.append(os.path.join(os.path.dirname(__file__), "../OpenGait"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../OpenGait"))
 
 # Import necessary modules for monkey patching
 import torch.distributed as dist
@@ -111,7 +111,7 @@ from opengait.modeling.models.baseline import Baseline as GaitBase
 # Import SkeletonGait++ with custom loader to resolve import issues
 SkeletonGaitPP = None
 try:
-    from modules.skeletongait_loader import SkeletonGaitPP, create_skeletongait_pp
+    from ..models.skeletongait_loader import SkeletonGaitPP, create_skeletongait_pp
     print("✓ SkeletonGaitPP imported successfully via custom loader")
 except Exception as e:
     print(f"Info: SkeletonGait++ not available ({str(e)[:50]}...)")

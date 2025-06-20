@@ -3,16 +3,15 @@ Component management for the gait recognition system
 """
 
 import logging
-from modules.detector import PersonDetector
-from modules.tracker import PersonTracker
-from modules.visualizer import Visualizer
-from modules.silhouette_extractor import SilhouetteExtractor
-from modules.gait_recognizer import GaitRecognizer
-from modules.quality_assessor import GaitSequenceQualityAssessor
-from modules.enhanced_identifier import CCTVGaitIdentifier
-from modules.multimodal_identifier import MultiModalIdentifier
-from modules.face_embedding_extractor import FaceEmbeddingExtractor
-from utils.device import vprint
+from ..core.detector import PersonDetector
+from ..core.tracker import PersonTracker
+from ..core.visualizer import Visualizer
+from ..processing.silhouette_extractor import SilhouetteExtractor
+from ..models.gait_recognizer import GaitRecognizer
+from ..processing.quality_assessor import GaitSequenceQualityAssessor
+from ..identification.multimodal_identifier import MultiModalIdentifier
+from ..processing.face_embedding_extractor import FaceEmbeddingExtractor
+from ..utils.device import vprint
 
 class ComponentManager:
     """Manages initialization and access to system components"""

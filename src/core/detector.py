@@ -4,7 +4,7 @@ Object detection module using YOLO
 
 import numpy as np
 from ultralytics import YOLO
-from utils.device import get_best_device
+from src.utils.device import get_best_device
 
 class PersonDetector:
     def __init__(self, model_path):
