@@ -390,3 +390,153 @@ class DatabaseHandler:
                     pass
         
         return next_id
+    
+    def identify_person_face(self, face_embedding, top_k=5, threshold=0.6):
+        """
+        Identify person using face embedding only
+        
+        Args:
+            face_embedding: Face embedding vector (512,)
+            top_k: Number of top matches to return
+            threshold: Minimum similarity threshold
+            
+        Returns:
+            List of (person_id, similarity, name, quality) tuples
+        """
+        if not self.person_db.persons:
+            return []
+            
+        similarities = []
+        
+        # Calculate cosine similarity with all persons that have face embeddings
+        for person_id, person_data in self.person_db.persons.items():
+            if person_data.get('face_embedding') is not None:
+                face_emb = person_data['face_embedding']
+                sim = self.person_db._cosine_similarity(face_embedding, face_emb)
+                similarities.append((person_id, sim, person_data['name'], person_data.get('quality', 1.0)))
+        
+        # Sort by similarity (highest first)
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        
+        # Filter by threshold and return top_k
+        return [match for match in similarities[:top_k] if match[1] >= threshold]
+    
+    def identify_person_nucleus(self, gait_embedding, top_p=0.85, min_candidates=1, max_candidates=5,
+                               close_sim_threshold=0.08, amplification_factor=35.0, quality_weight=0.8,
+                               enhanced_ranking=True):
+        """
+        Identify person using nucleus sampling (for gait embeddings)
+        This method provides the nucleus sampling interface expected by MultiModalIdentifier
+        """
+        return self.person_db.identify_person_adaptive(
+            gait_embedding, 
+            method='nucleus',
+            top_p=top_p,
+            min_candidates=min_candidates,
+            max_candidates=max_candidates,
+            threshold=0.7,  # Default threshold
+            close_sim_threshold=close_sim_threshold,
+            amplification_factor=amplification_factor,
+            quality_weight=quality_weight,
+            enhanced_ranking=enhanced_ranking
+        )
+    
+    def identify_person_multimodal(self, gait_embedding=None, face_embedding=None, 
+                                  gait_weight=0.3, face_weight=0.7, 
+                                  face_threshold=0.6, gait_threshold=0.7,
+                                  require_both=False, top_k=5):
+        """
+        Identify person using both gait and face embeddings with fusion
+        
+        Args:
+            gait_embedding: Gait embedding (optional)
+            face_embedding: Face embedding (optional)
+            gait_weight: Weight for gait similarity (0.0-1.0)
+            face_weight: Weight for face similarity (0.0-1.0)
+            face_threshold: Minimum face similarity threshold
+            gait_threshold: Minimum gait similarity threshold
+            require_both: If True, require both modalities to match
+            top_k: Number of top matches to return
+            
+        Returns:
+            List of (person_id, fused_similarity, name, quality) tuples
+        """
+        if not self.person_db.persons:
+            return []
+        
+        # Get individual modality matches
+        face_matches = []
+        gait_matches = []
+        
+        if face_embedding is not None:
+            face_matches = self.identify_person_face(face_embedding, top_k=10, threshold=face_threshold)
+        
+        if gait_embedding is not None:
+            gait_matches = self.person_db.identify_person_adaptive(gait_embedding, threshold=gait_threshold)
+        
+        # Handle different scenarios
+        if require_both and not (face_matches and gait_matches):
+            return []  # Require both modalities
+        elif face_matches and gait_matches:
+            return self._fuse_multimodal_results(face_matches, gait_matches, face_weight, gait_weight, top_k)
+        elif face_matches:
+            return face_matches[:top_k]
+        elif gait_matches:
+            return gait_matches[:top_k]
+        else:
+            return []
+    
+    def _fuse_multimodal_results(self, face_matches, gait_matches, face_weight, gait_weight, top_k):
+        """
+        Fuse face and gait recognition results
+        
+        Args:
+            face_matches: List of face recognition matches
+            gait_matches: List of gait recognition matches
+            face_weight: Weight for face similarity
+            gait_weight: Weight for gait similarity
+            top_k: Number of top matches to return
+            
+        Returns:
+            Fused list of matches
+        """
+        # Collect all person IDs
+        all_person_ids = set()
+        for matches in [face_matches, gait_matches]:
+            for match in matches:
+                all_person_ids.add(match[0])
+        
+        # Calculate fused scores
+        fused_results = []
+        for person_id in all_person_ids:
+            face_score = 0.0
+            gait_score = 0.0
+            person_name = None
+            person_quality = 0.0
+            
+            # Get face score if available
+            for match in face_matches:
+                if match[0] == person_id:
+                    face_score = match[1]
+                    person_name = match[2]
+                    person_quality = match[3]
+                    break
+            
+            # Get gait score if available
+            for match in gait_matches:
+                if match[0] == person_id:
+                    gait_score = match[1]
+                    if not person_name:
+                        person_name = match[2]
+                        person_quality = match[3]
+                    break
+            
+            # Calculate weighted score
+            fused_score = (face_weight * face_score) + (gait_weight * gait_score)
+            
+            if person_name:
+                fused_results.append((person_id, fused_score, person_name, person_quality))
+        
+        # Sort by fused score and return top candidates
+        fused_results.sort(key=lambda x: x[1], reverse=True)
+        return fused_results[:top_k]

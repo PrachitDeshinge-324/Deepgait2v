@@ -50,7 +50,7 @@ class GaitRecognitionApp:
         # Share database with identification manager
         self.identification_manager = IdentificationManager(
             self.config,
-            self.database_handler.person_db,
+            self.database_handler,  # Pass the DatabaseHandler, not just person_db
             self.next_person_id
         )
         

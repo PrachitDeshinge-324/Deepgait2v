@@ -12,7 +12,7 @@ DEEPGAITV2_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"
 GAITBASE_MODEL_PATH = "weights/GaitBase_DA-180000.pt"
 SKELETONGAITPP_MODEL_PATH = "weights/SkeletonGaitPP_30_DA-50000.pt"
 VIDEO_DIR = '../Person_new/input'
-VIDEO_NAME = '3c.mp4'
+VIDEO_NAME = 'n.mp4'
 VIDEO_PATH = f"{VIDEO_DIR}/{VIDEO_NAME}"  # Path to the input video file
 
 # Data storage paths

@@ -8,10 +8,11 @@ from datetime import datetime
 class IdentificationManager:
     """Manages person identification"""
     
-    def __init__(self, config, person_db, next_person_id):
-        """Initialize with configuration and database"""
+    def __init__(self, config, database_handler, next_person_id):
+        """Initialize with configuration and database handler"""
         self.config = config
-        self.person_db = person_db
+        self.database_handler = database_handler  # DatabaseHandler instance
+        self.person_db = database_handler.person_db  # PersonDatabase instance for direct access
         self.next_person_id = next_person_id
         
     def process_identification(self, track_id, embedding, face_embedding, quality, active_track_ids, track_identities):
@@ -86,31 +87,59 @@ class IdentificationManager:
             self._create_new_person(track_id, embedding, face_embedding, quality, track_identities)
     
     def _get_identification_matches(self, track_id, embedding, face_embedding, quality):
-        """Get identification matches using configured method"""
+        """Get identification matches using configured method with multimodal support"""
         match_threshold = self.config.IDENTIFICATION_THRESHOLD
         
-        # Use appropriate identification method
-        if self.config.IDENTIFICATION_METHOD == "nucleus":
-            matches = self.person_db.identify_person_adaptive(
-                embedding, 
-                method='nucleus',
-                top_p=self.config.NUCLEUS_TOP_P,
-                min_candidates=self.config.NUCLEUS_MIN_CANDIDATES,
-                max_candidates=self.config.NUCLEUS_MAX_CANDIDATES,
-                threshold=match_threshold,
-                close_sim_threshold=self.config.NUCLEUS_CLOSE_SIM_THRESHOLD,
-                amplification_factor=self.config.NUCLEUS_AMPLIFICATION_FACTOR,
-                quality_weight=self.config.NUCLEUS_QUALITY_WEIGHT,
-                enhanced_ranking=self.config.NUCLEUS_ENHANCED_RANKING
+        # Check if we have both modalities
+        has_face = face_embedding is not None
+        has_gait = embedding is not None
+        
+        # Use multimodal identification if both are available
+        if has_face and has_gait:
+            vprint(f"Track {track_id}: Using multimodal identification (face + gait)")
+            matches = self.database_handler.identify_person_multimodal(
+                gait_embedding=embedding,
+                face_embedding=face_embedding,
+                gait_weight=self.config.GAIT_WEIGHT,
+                face_weight=self.config.FACE_WEIGHT,
+                face_threshold=self.config.FACE_THRESHOLD,
+                gait_threshold=match_threshold,
+                require_both=self.config.REQUIRE_BOTH_MODALITIES,
+                top_k=self.config.TOP_K_CANDIDATES
             )
-            vprint(f"Track {track_id}: Using enhanced nucleus sampling (top_p={self.config.NUCLEUS_TOP_P})")
+        elif has_face:
+            vprint(f"Track {track_id}: Using face-only identification")
+            matches = self.database_handler.identify_person_face(
+                face_embedding,
+                top_k=self.config.TOP_K_CANDIDATES,
+                threshold=self.config.FACE_THRESHOLD
+            )
+        elif has_gait:
+            # Use appropriate gait identification method
+            if self.config.IDENTIFICATION_METHOD == "nucleus":
+                matches = self.person_db.identify_person_adaptive(
+                    embedding, 
+                    method='nucleus',
+                    top_p=self.config.NUCLEUS_TOP_P,
+                    min_candidates=self.config.NUCLEUS_MIN_CANDIDATES,
+                    max_candidates=self.config.NUCLEUS_MAX_CANDIDATES,
+                    threshold=match_threshold,
+                    close_sim_threshold=self.config.NUCLEUS_CLOSE_SIM_THRESHOLD,
+                    amplification_factor=self.config.NUCLEUS_AMPLIFICATION_FACTOR,
+                    quality_weight=self.config.NUCLEUS_QUALITY_WEIGHT,
+                    enhanced_ranking=self.config.NUCLEUS_ENHANCED_RANKING
+                )
+                vprint(f"Track {track_id}: Using enhanced nucleus sampling (top_p={self.config.NUCLEUS_TOP_P})")
+            else:
+                matches = self.person_db.identify_person(
+                    embedding, 
+                    top_k=self.config.TOP_K_CANDIDATES, 
+                    threshold=match_threshold
+                )
+                vprint(f"Track {track_id}: Using top-k sampling (k={self.config.TOP_K_CANDIDATES})")
         else:
-            matches = self.person_db.identify_person(
-                embedding, 
-                top_k=self.config.TOP_K_CANDIDATES, 
-                threshold=match_threshold
-            )
-            vprint(f"Track {track_id}: Using top-k sampling (k={self.config.TOP_K_CANDIDATES})")
+            vprint(f"Track {track_id}: No valid embeddings available")
+            matches = []
             
         return matches
     
