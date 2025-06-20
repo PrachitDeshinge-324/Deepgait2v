@@ -276,7 +276,7 @@ class FaceEmbeddingExtractor:
             # The face is already detected and has the embedding computed by InsightFace
             face_embedding = best_face.embedding
             
-            print(f"DEBUG Face Extractor - Track {track_id}: using direct face embedding, shape={face_embedding.shape}")
+            vprint(f"DEBUG Face Extractor - Track {track_id}: using direct face embedding, shape={face_embedding.shape}")
             
             # Normalize the embedding for better similarity computation
             face_embedding = face_embedding / np.linalg.norm(face_embedding)
@@ -284,7 +284,7 @@ class FaceEmbeddingExtractor:
             # Cache the embedding
             self.face_embeddings_cache[track_id] = face_embedding
             
-            print(f"DEBUG Face Extractor - Track {track_id}: embedding extracted successfully, normalized shape={face_embedding.shape}")
+            vprint(f"DEBUG Face Extractor - Track {track_id}: embedding extracted successfully, normalized shape={face_embedding.shape}")
             return face_embedding
                 
         except Exception as e:

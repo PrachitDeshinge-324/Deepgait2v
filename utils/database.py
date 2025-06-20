@@ -6,9 +6,10 @@ import faiss
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 from typing import List, Tuple, Optional
+from .database_quality import EmbeddingQualityManager
 
 class PersonEmbeddingDatabase:
-    def __init__(self, dimension=256*16, use_cosine=True, metric_type=faiss.METRIC_L2):
+    def __init__(self, dimension=256*16, use_cosine=True, metric_type=faiss.METRIC_L2, database_path=None, quality_threshold=0.4):
         """Initialize person database with FAISS index"""
         self.people = {}  # Maps ID to person info (name, quality scores, etc)
         self.id_to_index = {}  # Maps person IDs to FAISS indices
@@ -33,6 +34,13 @@ class PersonEmbeddingDatabase:
             
         # Use GPU if available for larger databases (check after index creation)
         self._enable_gpu_if_available()
+        
+        # Initialize the quality manager
+        self.quality_manager = EmbeddingQualityManager(database_path, quality_threshold)
+        
+        # Check if maintenance is needed on startup
+        if self.quality_manager.check_maintenance_needed():
+            self.quality_manager.perform_maintenance(self)
                 
     def _enable_gpu_if_available(self):
         """Enable GPU acceleration if available and beneficial"""
@@ -297,7 +305,7 @@ class PersonEmbeddingDatabase:
         return final_results
 
     def identify_person_nucleus(self, embedding, top_p=0.9, min_candidates=1, max_candidates=10, threshold=None, 
-                               close_sim_threshold=0.05, amplification_factor=20.0, quality_weight=0.5, enhanced_ranking=True):
+                               close_sim_threshold=0.05, amplification_factor=0.1, quality_weight=0.5, enhanced_ranking=True):
         """
         Enhanced person identification using nucleus (top-p) sampling with improved handling of close similarities
         
@@ -854,364 +862,73 @@ class PersonEmbeddingDatabase:
         
         self.people[person_id]['last_updated'] = datetime.now()
         return True
-
-
-# Example usage
-def faiss_example():
-    # Initialize database (assuming 256*16 dimension for embeddings)
-    db = PersonEmbeddingDatabase(dimension=256*16)
     
-    # Create some sample embeddings (normally these would come from your embedding model)
-    sample_emb1 = np.random.rand(1, 256, 16).astype(np.float32)
-    sample_emb2 = np.random.rand(1, 256, 16).astype(np.float32)
-    
-    # Add people to the database
-    db.add_person("p001", "John Doe", sample_emb1, quality=0.95)
-    db.add_person("p002", "Jane Smith", sample_emb2, quality=0.92)
-    
-    # Save database
-    db.save_to_disk("data/person_db")
-    
-    # Load database
-    new_db = PersonEmbeddingDatabase()
-    new_db.load_from_disk("data/person_db")
-    
-    # Query with a test embedding (similar to first person)
-    test_emb = sample_emb1 + np.random.normal(0, 0.1, (1, 256, 16)).astype(np.float32)
-    
-    # Identify person
-    start_time = time.time()
-    results = new_db.identify_person(test_emb, threshold=0.5)
-    end_time = time.time()
-    
-    print(f"Identification took {(end_time - start_time)*1000:.2f} ms")
-    
-    if results:
-        for person_id, similarity, name in results:
-            print(f"Matched: {name} (ID: {person_id}) with similarity {similarity:.4f}")
-    else:
-        print("No matches found")
-    
-    # Update person
-    new_db.update_person("p001", name="John Smith")
-    
-    # Delete person
-    new_db.delete_person("p002")
-
-    def identify_person_ensemble(self, embeddings_list, top_k=1, threshold=None, ensemble_method='weighted_average'):
+    def calculate_ranking_scores(similarities_array, k=10):
         """
-        Enhanced ensemble identification using multiple embeddings with improved methods
+        Calculate ranking scores with improved stability using softmax with temperature
+        instead of extreme exponential amplification and random noise.
         
         Args:
-            embeddings_list: List of embedding arrays
-            top_k: Number of top matches to return
-            threshold: Similarity threshold
-            ensemble_method: 'weighted_average', 'majority_vote', 'max_confidence', or 'adaptive_ensemble'
+            similarities_array: Array of similarity scores
+            k: Number of top candidates to consider (nucleus sampling)
             
         Returns:
-            List of tuples: (person_id, similarity, name, quality, confidence)
+            Processed ranking scores array
         """
-        if not embeddings_list:
-            return []
+        if len(similarities_array) == 0:
+            return np.array([])
             
-        # Handle single embedding case
-        if len(embeddings_list) == 1:
-            return self.identify_person(embeddings_list[0], top_k, threshold)
+        # Sort similarities in descending order
+        sorted_indices = np.argsort(similarities_array)[::-1]
         
-        if ensemble_method == 'weighted_average':
-            return self._ensemble_weighted_average(embeddings_list, top_k, threshold)
-        elif ensemble_method == 'majority_vote':
-            return self._ensemble_majority_vote(embeddings_list, top_k, threshold)
-        elif ensemble_method == 'max_confidence':
-            return self._ensemble_max_confidence(embeddings_list, top_k, threshold)
-        elif ensemble_method == 'adaptive_ensemble':
-            return self._ensemble_adaptive(embeddings_list, top_k, threshold)
-        else:
-            # Fallback to single embedding
-            return self.identify_person(embeddings_list[0], top_k, threshold)
-    
-    def _ensemble_weighted_average(self, embeddings_list, top_k, threshold):
-        """Enhanced weighted average ensemble with quality-based weighting"""
-        # Calculate embedding quality weights
-        weights = []
-        for emb in embeddings_list:
-            # Estimate embedding quality based on norm and distribution
-            norm = np.linalg.norm(emb)
-            quality = min(1.0, norm / np.sqrt(self.dimension))  # Normalize by expected norm
-            weights.append(quality)
+        # Take top-k for nucleus sampling (if we have that many)
+        k = min(k, len(similarities_array))
+        top_indices = sorted_indices[:k]
         
-        # Normalize weights
-        weights = np.array(weights)
-        if np.sum(weights) > 0:
-            weights = weights / np.sum(weights)
-        else:
-            weights = np.ones(len(embeddings_list)) / len(embeddings_list)
+        # Extract top similarities
+        top_similarities = similarities_array[top_indices]
         
-        # Create weighted average embedding
-        avg_embedding = np.zeros_like(embeddings_list[0])
-        for i, emb in enumerate(embeddings_list):
-            avg_embedding += weights[i] * emb
-            
-        return self.identify_person(avg_embedding, top_k, threshold)
-    
-    def _ensemble_majority_vote(self, embeddings_list, top_k, threshold):
-        """Enhanced majority vote with confidence weighting"""
-        all_results = []
-        embedding_confidences = []
+        # Use softmax with temperature instead of exponential amplification
+        temperature = 0.2  # Lower = more contrast, higher = more smoothing
+        amplification_factor = 3.0  # Much lower than original 20.0
         
-        # Get results from each embedding with confidence tracking
-        for i, emb in enumerate(embeddings_list):
-            results = self.identify_person(emb, top_k=min(10, len(self.index_to_id)), threshold=threshold)
-            
-            # Calculate embedding confidence based on top match quality
-            emb_confidence = results[0][4] if results and len(results[0]) > 4 else 0.5
-            embedding_confidences.append(emb_confidence)
-            
-            # Add embedding index to results for weighting
-            for result in results:
-                all_results.append(result + (i, emb_confidence))
+        # Apply moderate amplification first
+        amplified = amplification_factor * top_similarities
         
-        # Aggregate votes with confidence weighting
-        vote_data = {}  # person_id -> {'votes': [], 'similarities': [], 'confidences': []}
+        # Then apply softmax with temperature for better numerical stability
+        # Subtract max to prevent overflow
+        exp_values = np.exp((amplified - np.max(amplified)) / temperature)
+        softmax_scores = exp_values / np.sum(exp_values)
         
-        for result in all_results:
-            person_id = result[0]
-            similarity = result[1]
-            confidence = result[5] if len(result) > 5 else 0.5
-            
-            if person_id not in vote_data:
-                vote_data[person_id] = {'votes': [], 'similarities': [], 'confidences': []}
-            
-            vote_data[person_id]['votes'].append(1)
-            vote_data[person_id]['similarities'].append(similarity)
-            vote_data[person_id]['confidences'].append(confidence)
+        # Create result array initialized with zeros
+        result = np.zeros_like(similarities_array)
         
-        # Calculate final scores
-        final_results = []
-        for person_id, data in vote_data.items():
-            vote_count = len(data['votes'])
-            avg_similarity = np.mean(data['similarities'])
-            avg_confidence = np.mean(data['confidences'])
-            
-            # Weighted score considering votes, similarity, and confidence
-            vote_strength = vote_count / len(embeddings_list)
-            final_score = (avg_similarity * 0.6 + 
-                          vote_strength * 0.3 + 
-                          avg_confidence * 0.1)
-            
-            person_info = self.people[person_id]
-            final_results.append((
-                person_id, 
-                final_score, 
-                person_info['name'], 
-                person_info.get('quality', 0.5),
-                avg_confidence
-            ))
+        # Place softmax scores in their original positions
+        for i, idx in enumerate(top_indices):
+            result[idx] = softmax_scores[i]
         
-        # Sort by final score
-        final_results.sort(key=lambda x: x[1], reverse=True)
-        return final_results[:top_k]
-    
-    def _ensemble_max_confidence(self, embeddings_list, top_k, threshold):
-        """Enhanced max confidence ensemble with fallback"""
-        best_results = []
-        best_confidence = 0
-        all_results = []
-        
-        for emb in embeddings_list:
-            results = self.identify_person(emb, top_k, threshold)
-            all_results.extend(results)
-            
-            if results:
-                current_confidence = results[0][4] if len(results[0]) > 4 else results[0][1]
-                if current_confidence > best_confidence:
-                    best_confidence = current_confidence
-                    best_results = results
-        
-        # If no single embedding gives high confidence, fall back to majority vote
-        if best_confidence < 0.6:
-            return self._ensemble_majority_vote(embeddings_list, top_k, threshold)
-        
-        return best_results
-    
-    def _ensemble_adaptive(self, embeddings_list, top_k, threshold):
-        """Adaptive ensemble that chooses best method based on embedding characteristics"""
-        # Analyze embedding consistency
-        if len(embeddings_list) < 3:
-            return self._ensemble_weighted_average(embeddings_list, top_k, threshold)
-        
-        # Calculate pairwise similarities between embeddings
-        similarities = []
-        for i in range(len(embeddings_list)):
-            for j in range(i+1, len(embeddings_list)):
-                if self.use_cosine:
-                    # Cosine similarity between embeddings
-                    emb1 = embeddings_list[i].reshape(-1)
-                    emb2 = embeddings_list[j].reshape(-1)
-                    sim = np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
-                    similarities.append(sim)
-                else:
-                    # L2 distance converted to similarity
-                    dist = np.linalg.norm(embeddings_list[i] - embeddings_list[j])
-                    sim = np.exp(-dist / np.sqrt(self.dimension))
-                    similarities.append(sim)
-        
-        avg_consistency = np.mean(similarities)
-        
-        # Choose method based on consistency
-        if avg_consistency > 0.8:
-            # High consistency: use weighted average
-            return self._ensemble_weighted_average(embeddings_list, top_k, threshold)
-        elif avg_consistency > 0.5:
-            # Medium consistency: use majority vote
-            return self._ensemble_majority_vote(embeddings_list, top_k, threshold)
-        else:
-            # Low consistency: use max confidence
-            return self._ensemble_max_confidence(embeddings_list, top_k, threshold)
-    
-    def add_person_multimodal(self, person_id: str, name: str, 
-                         gait_embedding: Optional[np.ndarray] = None,
-                         face_embedding: Optional[np.ndarray] = None,
-                         quality: float = 1.0, metadata: Optional[dict] = None) -> bool:
-        """
-        Add a person to database with both gait and face embeddings
-        
-        Args:
-            person_id: Unique person identifier
-            name: Person's name
-            gait_embedding: Gait embedding (optional)
-            face_embedding: Face embedding (optional)
-            quality: Quality score for the embeddings
-            metadata: Optional additional information
-            
-        Returns:
-            Success boolean
-        """
-        if person_id in self.people:
-            print(f"Person ID {person_id} already exists. Use update_person_multimodal instead.")
-            return False
-            
-        if gait_embedding is None and face_embedding is None:
-            print("At least one embedding (gait or face) must be provided")
-            return False
-        
-        # Add to database using gait embedding for FAISS index (primary modality)
-        if gait_embedding is not None:
-            success = self.add_person(person_id, name, gait_embedding, quality, metadata)
-            if not success:
-                return False
-        else:
-            # If only face embedding, create placeholder entry
-            self.people[person_id] = {
-                'name': name,
-                'quality': quality,
-                'created': datetime.now(),
-                'last_updated': datetime.now(),
-                'metadata': metadata or {},
-                'gait_embeddings': [],
-                'face_embeddings': [],
-                'qualities': []
-            }
-        
-        # Initialize multimodal storage if not exists
-        if 'gait_embeddings' not in self.people[person_id]:
-            self.people[person_id]['gait_embeddings'] = []
-        if 'face_embeddings' not in self.people[person_id]:
-            self.people[person_id]['face_embeddings'] = []
-        if 'qualities' not in self.people[person_id]:
-            self.people[person_id]['qualities'] = []
-        
-        # Add embeddings if provided
-        if gait_embedding is not None:
-            self.people[person_id]['gait_embeddings'].append(gait_embedding.copy())
-        if face_embedding is not None:
-            self.people[person_id]['face_embeddings'].append(face_embedding.copy())
-        
-        self.people[person_id]['qualities'].append(quality)
-        return True
+        return result
 
-    def identify_person_face(self, embedding: np.ndarray, top_k: int = 5, 
-                            threshold: float = 0.5) -> List[Tuple]:
+    def resolve_ties(similarities, metadata=None):
         """
-        Identify person using face embedding
+        Deterministically resolve ties in similarity scores
         
         Args:
-            embedding: Face embedding to match
-            top_k: Number of results to return
-            threshold: Similarity threshold
-            
+            similarities: Array of similarity scores
+            metadata: Optional metadata to use as secondary sorting criteria
+                     (e.g., quality scores, recency)
+                     
         Returns:
-            List of (person_id, similarity, name, quality) tuples
+            Array of indices sorted by priority
         """
-        results = []
+        # Create array of indices
+        indices = np.arange(len(similarities))
         
-        for person_id, person_data in self.people.items():
-            if not person_data.get('face_embeddings'):
-                continue
-                
-            # Get best similarity across all face embeddings for this person
-            similarities = []
-            for face_emb in person_data['face_embeddings']:
-                # Use cosine similarity for face embeddings
-                similarity = np.dot(embedding, face_emb) / (np.linalg.norm(embedding) * np.linalg.norm(face_emb))
-                similarities.append(similarity)
-            
-            # Use best match
-            best_similarity = max(similarities) if similarities else 0
-            if best_similarity >= threshold:
-                avg_quality = sum(person_data['qualities']) / len(person_data['qualities'])
-                results.append((person_id, best_similarity, person_data['name'], avg_quality))
-        
-        # Sort by similarity
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:top_k]
-
-    def update_person_multimodal(self, person_id: str, 
-                               gait_embedding: Optional[np.ndarray] = None,
-                               face_embedding: Optional[np.ndarray] = None,
-                               name: Optional[str] = None, quality: Optional[float] = None,
-                               metadata: Optional[dict] = None) -> bool:
-        """
-        Update an existing person with new multimodal embeddings
-        
-        Args:
-            person_id: Person identifier
-            gait_embedding: New gait embedding (optional)
-            face_embedding: New face embedding (optional)
-            name: Updated name (optional)
-            quality: Quality score (optional)
-            metadata: Additional metadata (optional)
-            
-        Returns:
-            Success boolean
-        """
-        if person_id not in self.people:
-            print(f"Person ID {person_id} not found.")
-            return False
-        
-        # Update basic info
-        if name:
-            self.people[person_id]['name'] = name
-        if quality is not None:
-            self.people[person_id]['quality'] = quality
-        if metadata:
-            self.people[person_id]['metadata'].update(metadata)
-        
-        # Initialize multimodal storage if not exists
-        if 'gait_embeddings' not in self.people[person_id]:
-            self.people[person_id]['gait_embeddings'] = []
-        if 'face_embeddings' not in self.people[person_id]:
-            self.people[person_id]['face_embeddings'] = []
-        if 'qualities' not in self.people[person_id]:
-            self.people[person_id]['qualities'] = []
-        
-        # Add new embeddings
-        if gait_embedding is not None:
-            self.people[person_id]['gait_embeddings'].append(gait_embedding.copy())
-        if face_embedding is not None:
-            self.people[person_id]['face_embeddings'].append(face_embedding.copy())
-        if quality is not None:
-            self.people[person_id]['qualities'].append(quality)
-        
-        self.people[person_id]['last_updated'] = datetime.now()
-        return True
+        if metadata is not None:
+            # Sort by similarity first, then by metadata (e.g., quality)
+            # This is deterministic - no random factors
+            return sorted(indices, key=lambda i: (similarities[i], metadata[i]))
+        else:
+            # Sort by similarity only - indices themselves serve as tiebreakers
+            # (favors earlier entries in case of exact ties)
+            return sorted(indices, key=lambda i: (similarities[i], -i))

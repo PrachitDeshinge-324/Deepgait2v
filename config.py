@@ -6,7 +6,8 @@ Configuration settings for the tracking application
 MODEL_PATH = 'weights/yolo11m.pt'
 SEG_MODEL_PATH = 'weights/yolo11l-seg.pt'
 # Model Selection and Configuration
-GAIT_MODEL_TYPE = "DeepGaitV2-P3D"  # Start with best-performing model for your CCTV setup
+GAIT_MODEL_TYPE = "DeepGaitV2"  # Use DeepGaitV2 for P3D mode
+GAIT_MODEL_BACKBONE_MODE = "p3d"  # Ensure P3D backbone is used (if supported by your loader)
 DEEPGAITV2_MODEL_PATH = "weights/DeepGaitV2_30_DA-50000.pt"
 GAITBASE_MODEL_PATH = "weights/GaitBase_DA-180000.pt"
 SKELETONGAITPP_MODEL_PATH = "weights/SkeletonGaitPP_30_DA-50000.pt"
@@ -164,8 +165,8 @@ ENABLE_FACE_RECOGNITION = True  # Enable face embedding extraction
 FACE_DETECTION_MODEL = 'buffalo_l'  # InsightFace model name
 FACE_RECOGNITION_MODEL = 'buffalo_l'  # Face recognition model
 FACE_DETECTION_SIZE = (320, 320)  # Detection resolution (smaller for performance)
-FACE_THRESHOLD = 0.2  # Face recognition similarity threshold
-FACE_QUALITY_THRESHOLD = 0.2  # Minimum face quality threshold (lowered for debugging)
+FACE_THRESHOLD = 0.15  # Face recognition similarity threshold
+FACE_QUALITY_THRESHOLD = 0.15  # Minimum face quality threshold (lowered for debugging)
 
 # Multi-modal fusion weights (adaptive weights will be used based on quality)
 FACE_WEIGHT = 0.7  # Base weight for face recognition in multi-modal fusion
@@ -255,3 +256,21 @@ PERSON_DATABASE_CONFIG = {
 RECOGNITION_CONFIDENCE_THRESHOLD = 0.7  # Minimum confidence for positive identification
 HIGH_QUALITY_THRESHOLD = 0.60           # Threshold for high-quality sequences (adjusted for real video)
 NEW_PERSON_QUALITY_THRESHOLD = 0.60     # Minimum quality to create new person (adjusted for real video)
+
+# Statistics settings
+OUTPUT_DIR = "output/statistics"
+SHOW_STATISTICS_PLOTS = False  # Set to True to show plots on screen
+
+# Metric Learning Configuration
+METRIC_LEARNING_CONFIG = {
+    'enabled': True,                               # Whether to use metric learning
+    'model_path': 'weights/metric_learning/best_metric_model.pth',  # Path to trained model
+    'input_dim': 512,                              # Input dimension (from original embeddings)
+    'embedding_dim': 256,                          # Output dimension
+    'similarity_threshold': 0.18,                  # Similarity threshold in new metric space
+    'amplification_factor': 3.0                    # Lower amplification (was 35.0)
+}
+
+# Update nucleus sampling parameters to work with metric embeddings
+NUCLEUS_AMPLIFICATION_FACTOR = 3.0                 # Reduced from 35.0
+NUCLEUS_CLOSE_SIM_THRESHOLD = 0.10                 # Adjusted for metric space

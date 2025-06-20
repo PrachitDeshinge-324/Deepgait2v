@@ -87,7 +87,7 @@ class SilhouetteExtractor:
             person_roi = frame[y:y2, x:x2]
             
             # Generate silhouette
-            silhouette = self._segment_person(person_roi)
+            silhouette, confidence_score = self._segment_person(person_roi)
             
             # Apply temporal consistency if we have a previous silhouette
             if track_id in self.prev_silhouettes:
@@ -187,164 +187,258 @@ class SilhouetteExtractor:
         return self.best_sequences.get(track_id)
     
     def _segment_person(self, person_roi):
-        """Segment person from background using YOLO-Seg"""
-        # Run segmentation
-        results = self.model(person_roi, classes=0, verbose=False, retina_masks=True)  # Added retina_masks=True
-        
-        # Create empty mask
+        """
+        Segment person from background using more robust approach with confidence scoring
+        instead of binary decisions and with standardized error handling.
+        """
+        # Create empty mask with confidence score
         h, w = person_roi.shape[:2]
         mask = np.zeros((h, w), dtype=np.uint8)
+        confidence_score = 0.0
         
-        # Process results
-        if results and len(results) > 0:
-            result = results[0]
-            if hasattr(result, 'masks') and result.masks is not None and len(result.masks) > 0:
-                # Get the mask with highest confidence
-                best_mask_idx = 0
-                if len(result.boxes) > 1:
-                    # If multiple detections, take the one with highest confidence
-                    confidences = [box.conf.item() for box in result.boxes]
-                    best_mask_idx = np.argmax(confidences)
-                
-                try:
-                    # Extract the binary mask and convert to desired format
-                    person_mask = result.masks[best_mask_idx].data.cpu().numpy()
+        try:
+            # Run segmentation with multiple fallback options
+            results = self.model(person_roi, classes=0, verbose=False, retina_masks=True)
+            
+            if results and len(results) > 0:
+                result = results[0]
+                if hasattr(result, 'masks') and result.masks is not None and len(result.masks) > 0:
+                    # Score masks by confidence and size
+                    best_mask_idx = 0
+                    best_mask_score = 0
                     
-                    # Handle different mask dimensions
-                    if len(person_mask.shape) == 3 and person_mask.shape[0] == 1:
-                        person_mask = person_mask[0]
+                    for idx, box in enumerate(result.boxes):
+                        if idx >= len(result.masks):
+                            continue
+                            
+                        # Calculate score based on confidence and position
+                        conf = box.conf.item()
+                        # Prefer centered objects (likely to be full person)
+                        box_data = box.xyxy.cpu().numpy()[0]
+                        box_center_x = (box_data[0] + box_data[2]) / 2
+                        box_center_y = (box_data[1] + box_data[3]) / 2
+                        center_dist = np.sqrt((box_center_x/w - 0.5)**2 + (box_center_y/h - 0.5)**2)
+                        position_score = 1.0 - min(1.0, 2 * center_dist)
+                        
+                        # Prefer larger masks (more likely complete person)
+                        mask_area = result.masks[idx].data.sum().item() / (h * w)
+                        area_score = min(1.0, 4 * mask_area) if mask_area < 0.25 else 1.0
+                        
+                        # Combined score
+                        mask_score = conf * 0.6 + position_score * 0.2 + area_score * 0.2
+                        
+                        if mask_score > best_mask_score:
+                            best_mask_score = mask_score
+                            best_mask_idx = idx
                     
-                    # Ensure it's a binary mask
-                    person_mask = (person_mask > 0.5).astype(np.uint8) * 255
-                    
-                    # Resize to match original ROI dimensions if needed
-                    if person_mask.shape[:2] != (h, w):
-                        person_mask = cv2.resize(person_mask, (w, h))
-                    
-                    mask = person_mask
-                    
-                except Exception as e:
-                    print(f"Error processing mask: {e}")
+                    # Extract the binary mask with confidence information
+                    try:
+                        person_mask = result.masks[best_mask_idx].data.cpu().numpy()
+                        
+                        if len(person_mask.shape) == 3 and person_mask.shape[0] == 1:
+                            person_mask = person_mask[0]
+                        
+                        # Convert to probability mask (keep values between 0-1)
+                        person_mask_prob = person_mask.copy()
+                        
+                        # Use model confidence and mask consistency for overall confidence
+                        mask_consistency = 1.0 - np.std(person_mask_prob)  # Higher consistency = lower std
+                        confidence_score = best_mask_score * 0.7 + mask_consistency * 0.3
+                        
+                        # Create binary mask for processing
+                        person_mask = (person_mask > 0.5).astype(np.uint8) * 255
+                        
+                        # Resize to match original ROI dimensions if needed
+                        if person_mask.shape[:2] != (h, w):
+                            person_mask = cv2.resize(person_mask, (w, h))
+                        
+                        mask = person_mask
+                        
+                    except Exception as e:
+                        # Standardized error handling with logging
+                        confidence_score *= 0.5  # Reduce confidence due to error
+                        if hasattr(self, 'logger'):
+                            self.logger.warning(f"Mask conversion error: {str(e)}")
         
-        # Post-process: clean up mask with smaller kernels to preserve details
-        # Use smaller kernels to preserve gait details
-        small_kernel = np.ones((3,3), np.uint8)
+        except Exception as e:
+            # Global exception handler with informative error
+            if hasattr(self, 'logger'):
+                self.logger.error(f"Segmentation error: {str(e)}")
+            confidence_score = 0.0
         
-        # Fill small holes first
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, small_kernel)
-        
-        # Remove small noise
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small_kernel)
-        
-        # Apply edge preservation using bilateral filter
+        # Post-processing with adaptive parameters based on confidence
         if mask.max() > 0:
-            # Convert to float for bilateral filter
+            # Adaptive kernel size: more aggressive cleaning when confidence is low
+            kernel_size = 3 if confidence_score > 0.7 else 5
+            small_kernel = np.ones((kernel_size, kernel_size), np.uint8)
+            
+            # Fill small holes first
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, small_kernel)
+            
+            # Remove small noise
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small_kernel)
+            
+            # Apply edge preservation using bilateral filter
             mask_float = mask.astype(np.float32) / 255.0
-            # Apply bilateral filter to preserve edges while smoothing
-            mask_smooth = cv2.bilateralFilter(mask_float, 5, 50, 50)
+            # Use confidence score to determine filter parameters
+            d = 5
+            sigmaColor = 50 if confidence_score > 0.6 else 30
+            sigmaSpace = 50 if confidence_score > 0.6 else 30
+            mask_smooth = cv2.bilateralFilter(mask_float, d, sigmaColor, sigmaSpace)
             mask = (mask_smooth * 255).astype(np.uint8)
+            
+            # Final check to ensure binary values
+            mask = (mask > 127).astype(np.uint8) * 255
+            
+            # Assess contour quality and adjust confidence
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Instead of hard cutoff on contour count, use confidence scaling
+            if contours:
+                # More contours = less confidence, but scale gradually
+                contour_confidence = 1.0 / (1.0 + 0.2 * max(0, len(contours) - 1))
+                # Weight contour confidence less as overall confidence increases
+                confidence_score = confidence_score * 0.8 + contour_confidence * 0.2
+            else:
+                confidence_score = 0.0  # No contours = no confidence
         
-        # Final check to ensure binary values
-        mask = (mask > 127).astype(np.uint8) * 255
-        
-        return mask
-    
+        return mask , confidence_score
+
     def _evaluate_silhouette_quality(self, silhouette):
         """
-        More permissive silhouette quality evaluation for CCTV footage
+        Advanced silhouette quality evaluation using adaptive thresholds
         
         Returns:
             float: Quality score between 0 and 1
         """
         # Ensure silhouette is a proper 2D binary mask
         if len(silhouette.shape) > 2:
-            # Try to extract first channel if it's a multi-channel array
-            if silhouette.shape[2] >= 1:
-                silhouette = silhouette[:, :, 0]
-            else:
-                # If we can't extract, create a new empty mask
-                silhouette = np.zeros((silhouette.shape[0], silhouette.shape[1]), dtype=np.uint8)
+            silhouette = silhouette[:, :, 0] if silhouette.shape[2] >= 1 else np.zeros((silhouette.shape[0], silhouette.shape[1]), dtype=np.uint8)
         
         # Ensure binary values (0 or 255)
         silhouette = (silhouette > 127).astype(np.uint8) * 255
         
-        # Calculate ratio of foreground pixels
+        # Calculate basic properties
         h, w = silhouette.shape
         fg_pixels = np.count_nonzero(silhouette)
         total_pixels = h * w
         fg_ratio = fg_pixels / total_pixels
         
-        # Size-based adaptive threshold - define size_factor
-        size_factor = min(1.0, total_pixels / 10000)
-        
-        # More permissive size check
-        if fg_ratio < 0.03 or fg_ratio > 0.97:  # Was 0.05 and 0.95
+        # Reject extreme cases (too empty or too full)
+        if fg_ratio < 0.02 or fg_ratio > 0.98:
             return 0.0
-        
-        # Quality components calculation with more lenient thresholds
-        
-        # 1. Region completeness
-        num_regions = 4
-        region_height = h // num_regions
-        region_densities = []
-        
-        for i in range(num_regions):
-            y_start = i * region_height
-            y_end = (i + 1) * region_height if i < num_regions - 1 else h
-            region = silhouette[y_start:y_end, :]
-            region_pixels = np.count_nonzero(region)
-            region_total = region.shape[0] * region.shape[1]
-            region_densities.append(region_pixels / region_total if region_total > 0 else 0)
             
-        # Head presence (more lenient)
-        head_threshold = max(0.005, 0.02 * size_factor)  # Lower threshold
-        head_score = min(1.0, region_densities[0] / head_threshold) * 0.25
+        # Get silhouette height/width based on non-zero columns/rows
+        # (more adaptive to actual figure than using full image dimensions)
+        col_sums = np.sum(silhouette > 0, axis=0)
+        row_sums = np.sum(silhouette > 0, axis=1)
+        non_zero_cols = np.where(col_sums > 0)[0]
+        non_zero_rows = np.where(row_sums > 0)[0]
         
-        # Feet presence (more lenient)
-        feet_threshold = max(0.005, 0.02 * size_factor)  # Lower threshold
-        feet_score = min(1.0, region_densities[-1] / feet_threshold) * 0.15
+        if len(non_zero_cols) == 0 or len(non_zero_rows) == 0:
+            return 0.0
+            
+        silhouette_width = non_zero_cols[-1] - non_zero_cols[0] + 1
+        silhouette_height = non_zero_rows[-1] - non_zero_rows[0] + 1
         
-        # Body completeness (more lenient)
-        body_score = min(1.0, min(region_densities[1:-1]) / 0.03) * 0.3  # Lower threshold
+        # Calculate aspect ratio (height/width) - human figures typically have aspect ratio > 1.5
+        aspect_ratio = silhouette_height / max(1, silhouette_width)
+        aspect_score = min(1.0, aspect_ratio / 1.5) * 0.15
         
-        # 2. Shape analysis: calculate contour quality
+        # Divide into anatomical regions using relative proportions instead of equal divisions
+        # Human body proportions: head ~1/8, torso ~3/8, legs ~4/8 of height
+        head_region = silhouette[0:int(silhouette_height*0.2), :]
+        torso_region = silhouette[int(silhouette_height*0.2):int(silhouette_height*0.55), :]
+        legs_region = silhouette[int(silhouette_height*0.55):, :]
+        
+        # Calculate region densities relative to expected proportions
+        head_density = np.count_nonzero(head_region) / max(1, head_region.size)
+        torso_density = np.count_nonzero(torso_region) / max(1, torso_region.size)
+        legs_density = np.count_nonzero(legs_region) / max(1, legs_region.size)
+        
+        # Adaptive thresholds based on overall silhouette density
+        # If overall density is low, we should expect lower density in each region
+        base_density = fg_ratio * 0.7  # Base expectation
+        
+        # Score each region relative to the silhouette's overall characteristics
+        head_expected = base_density * 0.8  # Head typically less dense than body
+        head_score = min(1.0, head_density / max(0.01, head_expected)) * 0.25
+        
+        torso_expected = base_density * 1.2  # Torso typically more dense
+        torso_score = min(1.0, torso_density / max(0.01, torso_expected)) * 0.3
+        
+        legs_expected = base_density * 0.9  # Legs typically less dense than torso
+        legs_score = min(1.0, legs_density / max(0.01, legs_expected)) * 0.2
+        
+        # Balance analysis - check if silhouette is centered
+        col_center = np.sum(np.arange(w) * col_sums) / max(1, np.sum(col_sums))
+        balance_score = min(1.0, 1 - abs(col_center/w - 0.5) * 2) * 0.1
+        
+        # Contour analysis - more sophisticated than before
         try:
             contours, _ = cv2.findContours(silhouette, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if contours:
                 largest_contour = max(contours, key=cv2.contourArea)
                 contour_area = cv2.contourArea(largest_contour)
-                hull = cv2.convexHull(largest_contour)
-                hull_area = cv2.contourArea(hull)
+                perimeter = cv2.arcLength(largest_contour, True)
                 
-                # Solidity: ratio of contour area to convex hull area
-                if hull_area > 0:
-                    solidity = contour_area / hull_area
-                    # Good human shapes have high solidity
-                    contour_score = min(1.0, solidity / 0.7) * 0.2
-                else:
-                    contour_score = 0
+                # Calculate circularity (4*pi*area/perimeter²) - human silhouettes aren't circular
+                circularity = (4 * np.pi * contour_area) / max(perimeter * perimeter, 1)
+                # Good human silhouettes have moderate circularity (not too circular, not too irregular)
+                contour_score = min(1.0, 1 - abs(circularity - 0.3) / 0.3) * 0.15
+                
+                # Connectivity score - reduce for multiple disconnected regions
+                connectivity_factor = min(1.0, 3 / max(1, len(contours)))
+                connectivity_score = 0.1 * connectivity_factor
             else:
                 contour_score = 0
-        except Exception as e:
-            print(f"Error in contour analysis: {e}")
+                connectivity_score = 0
+        except Exception:
             contour_score = 0
+            connectivity_score = 0
         
-        # 3. Connectivity (penalize disjoint regions)
-        connectivity_score = 0.1
-        if len(contours) > 3:  # Too many disconnected parts
-            connectivity_score *= (3 / len(contours))
-            
         # Combined quality score with weighted components
-        quality_score = head_score + feet_score + body_score + contour_score + connectivity_score
+        quality_score = head_score + torso_score + legs_score + aspect_score + contour_score + balance_score + connectivity_score
         
-        # Even if some components are weak, boost the overall score
-        if head_score + body_score > 0.4:  # If head and body are decent
-            quality_score += 0.1  # Boost the score
-            
         # Normalize to 0-1 range
         quality_score = min(1.0, quality_score)
         
+        # Store quality metrics for potential future learning
+        self._update_quality_statistics(quality_score, head_density, torso_density, legs_density)
+        
         return quality_score
+
+    def _update_quality_statistics(self, quality_score, head_density, torso_density, legs_density):
+        """
+        Store quality statistics for adaptive threshold learning
+        
+        This method lays groundwork for ML-based quality assessment by collecting statistics
+        """
+        # Initialize statistics containers if needed
+        if not hasattr(self, 'quality_stats'):
+            self.quality_stats = {
+                'samples': 0,
+                'quality_scores': [],
+                'head_densities': [],
+                'torso_densities': [],
+                'legs_densities': [],
+            }
+        
+        # Store statistics (limit to last 1000 samples)
+        if self.quality_stats['samples'] < 1000:
+            self.quality_stats['quality_scores'].append(quality_score)
+            self.quality_stats['head_densities'].append(head_density)
+            self.quality_stats['torso_densities'].append(torso_density)
+            self.quality_stats['legs_densities'].append(legs_density)
+        else:
+            # Replace oldest entry
+            idx = self.quality_stats['samples'] % 1000
+            self.quality_stats['quality_scores'][idx] = quality_score
+            self.quality_stats['head_densities'][idx] = head_density
+            self.quality_stats['torso_densities'][idx] = torso_density
+            self.quality_stats['legs_densities'][idx] = legs_density
+        
+        self.quality_stats['samples'] += 1
     
     def _apply_temporal_consistency(self, current_silhouette, prev_silhouette):
         """
