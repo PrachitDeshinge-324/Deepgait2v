@@ -15,6 +15,10 @@ from .keyboard_handler import KeyboardHandler
 from .database_handler import DatabaseHandler
 from .statistics_reporter import StatisticsReporter
 
+# Force optimization mode
+FORCE_BATCH_PROCESSING = True
+FORCE_DEVICE_OPTIMIZATION = True
+
 class GaitRecognitionApp:
     """Main application class for gait recognition with quality control"""
     
@@ -145,8 +149,14 @@ class GaitRecognitionApp:
         return face_embeddings
         
     def _process_tracks(self, active_track_ids):
-        """Process tracks for quality assessment and identification"""
-        for track_id in self.track_manager.get_tracks_ready_for_processing():
+        """Process tracks for quality assessment and identification with batch optimization"""
+        ready_tracks = self.track_manager.get_tracks_ready_for_processing()
+        
+        # Prepare batch data for efficient processing
+        batch_data = []
+        track_metadata = []
+        
+        for track_id in ready_tracks:
             # Get track data
             silhouettes = self.track_manager.get_track_silhouettes(track_id)
             
@@ -161,24 +171,76 @@ class GaitRecognitionApp:
             # Skip identification if quality is too low
             if not quality_result['is_acceptable']:
                 continue
-                
-            # Generate embedding for recognition
-            embedding = self.component_manager.gait_recognizer.recognize(silhouettes)
-            if embedding is None:
-                continue
-                
-            # Get face embedding if available
-            face_embedding = self.track_manager.get_track_face_embedding(track_id)
             
-            # Person identification
-            self.identification_manager.process_identification(
-                track_id, 
-                embedding,
-                face_embedding,
-                quality_result['overall_score'],
-                active_track_ids,
-                self.track_manager.track_identities
-            )
+            # Add to batch for processing
+            batch_data.append({
+                'silhouettes': silhouettes,
+                'parsings': None,  # Will be generated if needed
+                'metadata': {'track_id': track_id}
+            })
+            track_metadata.append({
+                'track_id': track_id,
+                'quality_score': quality_result['overall_score']
+            })
+        
+        # Process batch if we have data
+        if batch_data:
+            try:
+                # Try batch processing first (more efficient)
+                if hasattr(self.component_manager.gait_recognizer, 'recognize_batch') and len(batch_data) > 1:
+                    embeddings = self.component_manager.gait_recognizer.recognize_batch(batch_data)
+                    
+                    # Process results
+                    for i, (embedding, metadata) in enumerate(zip(embeddings, track_metadata)):
+                        if embedding is not None:
+                            self._process_single_identification(
+                                metadata['track_id'], 
+                                embedding, 
+                                metadata['quality_score'],
+                                active_track_ids
+                            )
+                else:
+                    # Fallback to individual processing
+                    for data, metadata in zip(batch_data, track_metadata):
+                        embedding = self.component_manager.gait_recognizer.recognize(data['silhouettes'])
+                        if embedding is not None:
+                            self._process_single_identification(
+                                metadata['track_id'], 
+                                embedding, 
+                                metadata['quality_score'],
+                                active_track_ids
+                            )
+                            
+            except Exception as e:
+                print(f"Batch processing failed, using individual processing: {e}")
+                # Fallback to individual processing
+                for data, metadata in zip(batch_data, track_metadata):
+                    try:
+                        embedding = self.component_manager.gait_recognizer.recognize(data['silhouettes'])
+                        if embedding is not None:
+                            self._process_single_identification(
+                                metadata['track_id'], 
+                                embedding, 
+                                metadata['quality_score'],
+                                active_track_ids
+                            )
+                    except Exception as track_error:
+                        print(f"Failed to process track {metadata['track_id']}: {track_error}")
+    
+    def _process_single_identification(self, track_id, embedding, quality_score, active_track_ids):
+        """Process identification for a single track"""
+        # Get face embedding if available
+        face_embedding = self.track_manager.get_track_face_embedding(track_id)
+        
+        # Person identification
+        self.identification_manager.process_identification(
+            track_id, 
+            embedding,
+            face_embedding,
+            quality_score,
+            active_track_ids,
+            self.track_manager.track_identities
+        )
             
     def _visualize_frame(self, frame, tracks, active_track_ids):
         """Visualize the current frame with all annotations"""

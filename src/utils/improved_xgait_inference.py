@@ -54,7 +54,7 @@ class ImprovedXGaitInference:
         self._initialize_human_parser()
         
     def _initialize_human_parser(self):
-        """Initialize the human parsing model"""
+        """Initialize the human parsing model with optimizations"""
         try:
             # Use SCHP model by default as it's optimized for gait analysis
             self.human_parser = HumanParsingModel(
@@ -63,6 +63,15 @@ class ImprovedXGaitInference:
             )
             if self.human_parser.model is not None:
                 logger.info("Human parsing model loaded successfully")
+                
+                # Add optimized wrapper for better performance
+                try:
+                    from ..processing.optimized_human_parsing import optimize_human_parser
+                    self.human_parser.optimized_parser = optimize_human_parser(self.human_parser)
+                    logger.info("✅ Human parsing optimization enabled")
+                except ImportError:
+                    logger.warning("⚠️ Optimized human parsing not available")
+                
                 self.use_pretrained_parsing = True
             else:
                 logger.warning("Human parsing model failed to load, using geometric fallback")
@@ -304,31 +313,55 @@ class ImprovedXGaitInference:
         
         parsing_maps = []
         
-        for sil in silhouettes:
-            try:
-                # Convert silhouette to RGB format for the parsing model
-                # The parsing model expects RGB input, but we have binary silhouettes
-                # We'll create a pseudo-RGB image where the silhouette forms a person shape
-                
-                # First, create a more realistic person image from silhouette
-                rgb_image = self._silhouette_to_rgb(sil)
-                
-                # Use the human parsing model to generate parsing
-                parsing_result = self.human_parser.parse_human(rgb_image)
-                
-                if parsing_result is not None:
-                    # Convert parsing result to XGait format
-                    xgait_parsing = self._convert_parsing_to_xgait_format(parsing_result, sil)
-                    parsing_maps.append(xgait_parsing)
+        # Batch process parsing to improve efficiency
+        try:
+            # Prepare batch of RGB images for parsing
+            rgb_images = []
+            valid_indices = []
+            
+            for i, sil in enumerate(silhouettes):
+                try:
+                    rgb_image = self._silhouette_to_rgb(sil)
+                    rgb_images.append(rgb_image)
+                    valid_indices.append(i)
+                except Exception as e:
+                    logger.warning(f"Failed to convert silhouette {i} to RGB: {e}")
+            
+            # Batch process with optimized parser if available
+            if rgb_images:
+                if hasattr(self.human_parser, 'optimized_parser'):
+                    # Use optimized batch processing
+                    batch_results = self.human_parser.optimized_parser.parse_batch(rgb_images)
+                elif hasattr(self.human_parser, 'parse_batch'):
+                    # Use any available batch method
+                    batch_results = self.human_parser.parse_batch(rgb_images)
                 else:
-                    # Fallback to geometric parsing for this frame
-                    geometric_parsing = self._generate_enhanced_parsing([sil])[0]
-                    parsing_maps.append(geometric_parsing)
-                    
-            except Exception as e:
-                logger.warning(f"Parsing model failed for frame, using geometric fallback: {e}")
-                geometric_parsing = self._generate_enhanced_parsing([sil])[0]
-                parsing_maps.append(geometric_parsing)
+                    # Fallback to individual processing
+                    batch_results = []
+                    for rgb_image in rgb_images:
+                        parsing_result = self.human_parser.parse_human(rgb_image)
+                        batch_results.append(parsing_result)
+                
+                # Process batch results
+                for i, (idx, parsing_result) in enumerate(zip(valid_indices, batch_results)):
+                    if parsing_result is not None:
+                        # Convert parsing result to XGait format
+                        xgait_parsing = self._convert_parsing_to_xgait_format(
+                            parsing_result, silhouettes[idx]
+                        )
+                        parsing_maps.append(xgait_parsing)
+                    else:
+                        # Fallback to geometric parsing for this frame
+                        geometric_parsing = self._generate_enhanced_parsing([silhouettes[idx]])[0]
+                        parsing_maps.append(geometric_parsing)
+            else:
+                # If no valid RGB images, use geometric parsing for all
+                parsing_maps = self._generate_enhanced_parsing(silhouettes)
+                
+        except Exception as e:
+            logger.warning(f"Batch parsing failed, using geometric fallback: {e}")
+            # Complete fallback to geometric parsing
+            parsing_maps = self._generate_enhanced_parsing(silhouettes)
         
         return parsing_maps
     

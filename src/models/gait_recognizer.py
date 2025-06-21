@@ -4,6 +4,8 @@ import sys
 import os
 import logging
 from src.utils.device import get_best_device
+from src.utils.optimized_inference_pipeline import create_optimized_pipeline, OptimizedInferencePipeline
+from src.utils.optimized_batch_processor import BatchConfig
 import cv2
 
 # Add OpenGait to path to import the model
@@ -220,7 +222,65 @@ class GaitRecognizer:
             traceback.print_exc()
             raise
     
-        # Initialize improved inference for XGait
+        # Initialize optimized inference pipeline with better error handling
+        self.optimized_pipeline = None
+        try:
+            # Create optimized batch configuration
+            batch_config = BatchConfig(
+                max_batch_size=getattr(cfg, 'max_batch_size', 4),
+                min_batch_size=1,
+                sequence_length_tolerance=5,
+                memory_threshold_gb=1.0,
+                enable_dynamic_batching=True,
+                enable_sequence_padding=True,
+                padding_strategy="replicate"
+            )
+            
+            print("🔄 Initializing optimized inference pipeline...")
+            
+            # Create optimized inference pipeline
+            self.optimized_pipeline = create_optimized_pipeline(
+                model=self.model,
+                model_type=model_type,
+                enable_profiling=getattr(cfg, 'enable_profiling', False),
+                batch_config=batch_config
+            )
+            
+            # Apply deployment optimizations
+            print("🔄 Applying deployment optimizations...")
+            optimization_report = self.optimized_pipeline.optimize_for_deployment()
+            print(f"✅ Optimized inference pipeline initialized successfully")
+            print(f"📊 Applied optimizations: {', '.join(optimization_report['optimizations_applied'])}")
+            print(f"🎯 Device: {optimization_report.get('device', 'unknown')}")
+            print(f"⚡ Memory optimizations: {optimization_report.get('memory_optimizations', [])}")
+            
+        except ImportError as e:
+            print(f"❌ Failed to import optimization modules: {e}")
+            print("📦 Please ensure all optimization dependencies are available")
+            self.optimized_pipeline = None
+            
+        except AttributeError as e:
+            print(f"⚠️ Model attribute error during optimization: {e}")
+            print("🔄 Falling back to standard inference mode")
+            self.optimized_pipeline = None
+            
+        except RuntimeError as e:
+            error_str = str(e).lower()
+            if 'mps' in error_str or 'cuda' in error_str:
+                print(f"⚠️ Device-specific optimization failed: {e}")
+                print("🔄 Falling back to CPU optimizations")
+            else:
+                print(f"❌ Runtime error during optimization: {e}")
+            self.optimized_pipeline = None
+            
+        except Exception as e:
+            print(f"❌ Unexpected error during optimization setup: {e}")
+            print("🔄 Using standard inference mode")
+            import traceback
+            traceback.print_exc()  # For debugging - remove in production
+            self.optimized_pipeline = None
+    
+        # Initialize improved inference for XGait (legacy support)
         if model_type == "XGait":
             try:
                 # Try different import methods
@@ -234,10 +294,10 @@ class GaitRecognizer:
                     from utils.improved_xgait_inference import ImprovedXGaitInference
                 
                 self.improved_inference = ImprovedXGaitInference(self, cfg or self._get_default_config())
-                print("✅ Enhanced XGait inference pipeline initialized")
+                print("✅ Enhanced XGait inference pipeline initialized (legacy)")
             except ImportError as e:
                 print(f"⚠️ Enhanced XGait inference not available: {e}")
-                print("Using standard pipeline")
+                print("Using optimized pipeline only")
                 self.improved_inference = None
             except Exception as e:
                 print(f"⚠️ Failed to initialize enhanced inference: {e}")
@@ -327,9 +387,62 @@ class GaitRecognizer:
         """Get information about current model"""
         model_info = {
             'model_type': self.model_type,
-            'device': str(self.device)
+            'device': str(self.device),
+            'optimized_pipeline': self.optimized_pipeline is not None,
+            'improved_inference': hasattr(self, 'improved_inference') and self.improved_inference is not None
         }
+        
+        # Add optimization details if available
+        if self.optimized_pipeline is not None:
+            try:
+                stats = self.optimized_pipeline.get_inference_statistics()
+                model_info['inference_stats'] = stats['inference_stats']
+                model_info['device_optimizations'] = stats['device_stats']['optimizations']
+            except Exception as e:
+                print(f"Could not get optimization stats: {e}")
+        
         return model_info
+    
+    def benchmark_performance(self, test_sequences=None, num_runs=5):
+        """
+        Benchmark model performance
+        
+        Args:
+            test_sequences: Test sequences for benchmarking (auto-generated if None)
+            num_runs: Number of benchmark runs
+            
+        Returns:
+            Benchmark results
+        """
+        if self.optimized_pipeline is None:
+            print("Optimized pipeline not available for benchmarking")
+            return {}
+        
+        # Generate test sequences if not provided
+        if test_sequences is None:
+            test_sequences = self._generate_test_sequences()
+        
+        return self.optimized_pipeline.benchmark_inference(test_sequences, num_runs)
+    
+    def _generate_test_sequences(self, num_sequences=5, seq_length=16):
+        """Generate test sequences for benchmarking"""
+        test_sequences = []
+        
+        for _ in range(num_sequences):
+            sequence = []
+            for _ in range(seq_length):
+                # Generate dummy silhouette
+                sil = np.zeros((64, 44), dtype=np.uint8)
+                # Add simple human shape
+                cv2.ellipse(sil, (22, 16), (8, 12), 0, 0, 360, 255, -1)  # Head
+                cv2.rectangle(sil, (14, 28), (30, 50), 255, -1)  # Torso
+                cv2.rectangle(sil, (16, 50), (21, 62), 255, -1)  # Left leg
+                cv2.rectangle(sil, (23, 50), (28, 62), 255, -1)  # Right leg
+                sequence.append(sil)
+            
+            test_sequences.append(sequence)
+        
+        return test_sequences
 
     def _create_complete_config(self, model_type, cfg):
         """Create complete configuration for the model"""
@@ -480,7 +593,7 @@ class GaitRecognizer:
 
     def recognize(self, silhouettes, parsings=None):
         """
-        Perform gait recognition using the currently active model
+        Perform gait recognition using the optimized inference pipeline
         
         Args:
             silhouettes: List of silhouette arrays
@@ -493,14 +606,60 @@ class GaitRecognizer:
             print("No silhouettes provided")
             return None
         
-        # Use improved inference for XGait if available
+        # Use optimized pipeline if available
+        if self.optimized_pipeline is not None:
+            try:
+                return self.optimized_pipeline.infer_single(
+                    silhouettes=silhouettes,
+                    parsings=parsings,
+                    quality_threshold=0.3
+                )
+            except Exception as e:
+                print(f"Optimized inference failed, falling back to legacy: {e}")
+        
+        # Use improved inference for XGait if available (legacy fallback)
         if self.model_type == "XGait" and hasattr(self, 'improved_inference') and self.improved_inference is not None:
             try:
                 return self.improved_inference.enhanced_inference(silhouettes, parsings)
             except Exception as e:
                 print(f"Enhanced inference failed, falling back to standard: {e}")
         
-        # Standard preprocessing and inference
+        # Standard preprocessing and inference (final fallback)
+        return self._standard_inference(silhouettes, parsings)
+    
+    def recognize_batch(self, batch_data):
+        """
+        Perform batch gait recognition using optimized pipeline
+        
+        Args:
+            batch_data: List of dictionaries with 'silhouettes', 'parsings', 'metadata'
+            
+        Returns:
+            List of feature embeddings
+        """
+        if not batch_data:
+            return []
+        
+        # Use optimized pipeline if available
+        if self.optimized_pipeline is not None:
+            try:
+                return self.optimized_pipeline.infer_batch(batch_data)
+            except Exception as e:
+                print(f"Optimized batch inference failed: {e}")
+        
+        # Fallback to individual processing
+        results = []
+        for item in batch_data:
+            result = self.recognize(
+                item["silhouettes"], 
+                item.get("parsings")
+            )
+            results.append(result)
+        
+        return results
+    
+    def _standard_inference(self, silhouettes, parsings=None):
+        """Standard inference method (fallback)"""
         preprocessed_input, seq_len = self.preprocess_silhouettes(silhouettes, parsings)
         
         # Move to device

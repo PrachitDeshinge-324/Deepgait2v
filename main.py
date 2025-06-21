@@ -2,18 +2,21 @@
 Main entry point for person detection, tracking, and gait recognition with enhanced CCTV accuracy
 """
 
+# Initialize clean environment with warning suppression
+from src.utils.warning_suppressor import setup_clean_environment
+warning_manager = setup_clean_environment()
+
 import warnings
 import numpy as np
-
-# Suppress only the specific InsightFace rcond warning to avoid interfering with tqdm
-warnings.filterwarnings("ignore", 
-                       message=".*rcond.*parameter will change.*", 
-                       category=FutureWarning,
-                       module=".*insightface.*")
-
+import os
 import config
 from src.app.gait_recognition_app import GaitRecognitionApp
 
+
+# Enable batch processing optimization
+os.environ['ENABLE_BATCH_PROCESSING'] = '1'
+os.environ['ENABLE_DEVICE_OPTIMIZATION'] = '1'
+    
 def main():
     """Main function to run the tracking and recognition application with quality control"""
     app = GaitRecognitionApp(config)
