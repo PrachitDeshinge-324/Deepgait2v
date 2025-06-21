@@ -116,12 +116,20 @@ class PersonDatabase:
             if 'embedding' in person_data and person_data['embedding'] is not None:
                 sim = self._cosine_similarity(embedding, person_data['embedding'])
                 similarities.append((person_id, sim, person_data['name'], person_data.get('quality', 1.0)))
+                
+        vprint(f"🔍 ID Check: {len(similarities)} candidates, threshold={threshold}")
         
         # Sort by similarity (highest first)
         similarities.sort(key=lambda x: x[1], reverse=True)
         
+        # Debug: Show top matches
+        for i, (pid, sim, name, qual) in enumerate(similarities[:3]):
+            vprint(f"  #{i+1}: {name} = {sim:.3f} (quality: {qual:.2f})")
+        
         # Filter by threshold and return top_k
-        return [match for match in similarities[:top_k] if match[1] >= threshold]
+        filtered = [match for match in similarities[:top_k] if match[1] >= threshold]
+        vprint(f"✅ Result: {len(filtered)} matches above threshold")
+        return filtered
     
     def identify_person_adaptive(self, embedding, method='nucleus', top_p=0.9, 
                                min_candidates=1, max_candidates=5, threshold=0.7,
@@ -281,7 +289,9 @@ class PersonDatabase:
         if norm1 == 0 or norm2 == 0:
             return 0.0
             
-        return np.dot(emb1, emb2) / (norm1 * norm2)
+        similarity = np.dot(emb1, emb2) / (norm1 * norm2)
+        
+        return similarity
     
     def __len__(self):
         return len(self.persons)
@@ -391,18 +401,22 @@ class DatabaseHandler:
         
         return next_id
     
-    def identify_person_face(self, face_embedding, top_k=5, threshold=0.6):
+    def identify_person_face(self, face_embedding, top_k=5, threshold=None):
         """
         Identify person using face embedding only
         
         Args:
             face_embedding: Face embedding vector (512,)
             top_k: Number of top matches to return
-            threshold: Minimum similarity threshold
+            threshold: Minimum similarity threshold (uses config value if None)
             
         Returns:
             List of (person_id, similarity, name, quality) tuples
         """
+        # Use config threshold if not provided
+        if threshold is None:
+            import config
+            threshold = getattr(config, 'FACE_THRESHOLD', 0.3)
         if not self.person_db.persons:
             return []
             
@@ -423,18 +437,23 @@ class DatabaseHandler:
     
     def identify_person_nucleus(self, gait_embedding, top_p=0.85, min_candidates=1, max_candidates=5,
                                close_sim_threshold=0.08, amplification_factor=35.0, quality_weight=0.8,
-                               enhanced_ranking=True):
+                               enhanced_ranking=True, threshold=None):
         """
         Identify person using nucleus sampling (for gait embeddings)
         This method provides the nucleus sampling interface expected by MultiModalIdentifier
         """
+        # Use config threshold if not provided
+        if threshold is None:
+            import config
+            threshold = getattr(config, 'SIMILARITY_THRESHOLD', 0.15)
+            
         return self.person_db.identify_person_adaptive(
             gait_embedding, 
             method='nucleus',
             top_p=top_p,
             min_candidates=min_candidates,
             max_candidates=max_candidates,
-            threshold=0.7,  # Default threshold
+            threshold=threshold,
             close_sim_threshold=close_sim_threshold,
             amplification_factor=amplification_factor,
             quality_weight=quality_weight,
@@ -443,7 +462,7 @@ class DatabaseHandler:
     
     def identify_person_multimodal(self, gait_embedding=None, face_embedding=None, 
                                   gait_weight=0.3, face_weight=0.7, 
-                                  face_threshold=0.6, gait_threshold=0.7,
+                                  face_threshold=None, gait_threshold=None,
                                   require_both=False, top_k=5):
         """
         Identify person using both gait and face embeddings with fusion
@@ -453,14 +472,21 @@ class DatabaseHandler:
             face_embedding: Face embedding (optional)
             gait_weight: Weight for gait similarity (0.0-1.0)
             face_weight: Weight for face similarity (0.0-1.0)
-            face_threshold: Minimum face similarity threshold
-            gait_threshold: Minimum gait similarity threshold
+            face_threshold: Minimum face similarity threshold (uses config if None)
+            gait_threshold: Minimum gait similarity threshold (uses config if None)
             require_both: If True, require both modalities to match
             top_k: Number of top matches to return
             
         Returns:
             List of (person_id, fused_similarity, name, quality) tuples
         """
+        # Use config thresholds if not provided
+        if face_threshold is None:
+            import config
+            face_threshold = getattr(config, 'FACE_THRESHOLD', 0.3)
+        if gait_threshold is None:
+            import config
+            gait_threshold = getattr(config, 'SIMILARITY_THRESHOLD', 0.15)
         if not self.person_db.persons:
             return []
         

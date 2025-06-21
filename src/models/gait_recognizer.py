@@ -118,8 +118,17 @@ except Exception as e:
     print("DeepGaitV2 and GaitBase models are fully functional.")
     SkeletonGaitPP = None
 
+# Import XGait with custom loader
+try:
+    from opengait.modeling.models.xgait import XGait
+    print("✓ XGait imported successfully")
+except Exception as e:
+    print(f"Info: XGait not available ({str(e)[:50]}...)")
+    print("Please ensure XGait model is properly set up in OpenGait.")
+    XGait = None
+
 class GaitRecognizer:
-    def __init__(self, model_type=None, model_path=None, cfg=None):
+    def __init__(self, model_type="DeepGaitV2", model_path=None, cfg=None):
         """
         Initialize the gait recognition model based on config settings
         
@@ -146,8 +155,8 @@ class GaitRecognizer:
         self.device = self._setup_device()
         
         # Validate model type
-        if model_type not in ["DeepGaitV2", "GaitBase", "SkeletonGaitPP"]:
-            raise ValueError(f"Unsupported model type: {model_type}. Use 'DeepGaitV2', 'GaitBase', or 'SkeletonGaitPP'")
+        if model_type not in ["DeepGaitV2", "GaitBase", "SkeletonGaitPP", "XGait"]:
+            raise ValueError(f"Unsupported model type: {model_type}. Use 'DeepGaitV2', 'GaitBase', 'SkeletonGaitPP', or 'XGait'")
         
         # Check if SkeletonGaitPP is available when requested
         if model_type == "SkeletonGaitPP" and SkeletonGaitPP is None:
@@ -161,6 +170,19 @@ class GaitRecognizer:
             print("2. Use GaitBase: Change config.GAIT_MODEL_TYPE = 'GaitBase'")
             print("="*60)
             raise ValueError("SkeletonGaitPP not available. Please use DeepGaitV2 or GaitBase.")
+
+        # Check if XGait is available when requested
+        if model_type == "XGait" and XGait is None:
+            print("\n" + "="*60)
+            print("⚠️  XGAIT NOT AVAILABLE")
+            print("="*60)
+            print("XGait model could not be imported.")
+            print("Please check if OpenGait dependencies are properly installed.")
+            print("\nRECOMMENDED ALTERNATIVES:")
+            print("1. Use DeepGaitV2: Change config.GAIT_MODEL_TYPE = 'DeepGaitV2'")
+            print("2. Use GaitBase: Change config.GAIT_MODEL_TYPE = 'GaitBase'")
+            print("="*60)
+            raise ValueError("XGait not available. Please use DeepGaitV2 or GaitBase.")
         
         # Validate and adjust configuration for compatibility
         cfg = self._validate_config(model_type, cfg)
@@ -176,6 +198,8 @@ class GaitRecognizer:
                 self.model = DeepGaitV2(complete_cfg, False)
             elif model_type == "GaitBase":
                 self.model = GaitBase(complete_cfg, False)
+            elif model_type == "XGait":
+                self.model = XGait(complete_cfg, False)
             else:  # SkeletonGaitPP
                 self.model = SkeletonGaitPP(complete_cfg, False)
                 
@@ -195,6 +219,18 @@ class GaitRecognizer:
             import traceback
             traceback.print_exc()
             raise
+    
+        # Initialize improved inference for XGait
+        if model_type == "XGait":
+            try:
+                from ..utils.improved_xgait_inference import ImprovedXGaitInference
+                self.improved_inference = ImprovedXGaitInference(self, cfg or self._get_default_config())
+                print("✅ Enhanced XGait inference pipeline initialized")
+            except ImportError:
+                print("⚠️ Enhanced XGait inference not available, using standard pipeline")
+                self.improved_inference = None
+        else:
+            self.improved_inference = None
     
     def _setup_device(self):
         """Setup the appropriate device for inference"""
@@ -261,6 +297,17 @@ class GaitRecognizer:
             if 'bin_num' not in cfg_copy:
                 cfg_copy['bin_num'] = [16]
                 
+        elif model_type == "XGait":
+            # XGait requires specific configuration
+            required_fields = ['backbone_cfg', 'CALayers', 'CALayersP', 'SeparateFCs', 'SeparateBNNecks', 'bin_num']
+            for field in required_fields:
+                if field not in cfg_copy:
+                    print(f"WARNING: Missing required field '{field}' in XGait config")
+            
+            # Ensure bin_num is present
+            if 'bin_num' not in cfg_copy:
+                cfg_copy['bin_num'] = [16]
+                
         return cfg_copy
     
     def get_model_info(self):
@@ -277,6 +324,8 @@ class GaitRecognizer:
             model_type_name = "DeepGaitV2"
         elif model_type == "SkeletonGaitPP":
             model_type_name = "SkeletonGaitPP"
+        elif model_type == "XGait":
+            model_type_name = "XGait"
         else:  # GaitBase
             model_type_name = "Baseline"
         
@@ -315,29 +364,59 @@ class GaitRecognizer:
         }
         return complete_cfg
 
-    def preprocess_silhouettes(self, silhouettes):
+    def preprocess_silhouettes(self, silhouettes, parsings=None):
         """
         Preprocess silhouettes to match model training pipeline
-        DeepGaitV2 and GaitBase use silhouettes only, SkeletonGaitPP uses pose+silhouette
+        DeepGaitV2 and GaitBase use silhouettes only
+        SkeletonGaitPP uses pose+silhouette
+        XGait uses silhouette+parsing
+        
+        Args:
+            silhouettes: List of silhouette arrays
+            parsings: List of parsing arrays (for XGait)
         """
         seq_len = len(silhouettes)
         
         # Resize silhouettes to expected dimensions (height=64, width=44)
         resized_sils = []
         for sil in silhouettes:
+            # Convert to grayscale if RGB
+            if len(sil.shape) == 3 and sil.shape[2] == 3:
+                sil = cv2.cvtColor(sil, cv2.COLOR_RGB2GRAY)
+            elif len(sil.shape) == 3 and sil.shape[2] == 1:
+                sil = sil.squeeze(2)
+            
             # Resize to 64x44 - common gait silhouette size
             resized = cv2.resize(sil, (44, 64), interpolation=cv2.INTER_LINEAR)
             resized_sils.append(resized)
         
-        if self.model_type == "SkeletonGaitPP":
+        if self.model_type == "XGait":
+            # XGait requires both silhouette and parsing
+            if parsings is None:
+                # Use improved fallback: generate parsing maps from silhouettes
+                resized_pars = self.generate_parsing(resized_sils)
+            else:
+                # Resize parsing maps
+                resized_pars = []
+                for par in parsings:
+                    resized = cv2.resize(par, (44, 64), interpolation=cv2.INTER_NEAREST)
+                    resized_pars.append(resized)
+            
+            # Prepare tensors for XGait without extra dimension
+            sils_tensor = torch.zeros((1, seq_len, 64, 44), dtype=torch.float32)
+            pars_tensor = torch.zeros((1, seq_len, 64, 44), dtype=torch.float32)
+            
+            for i, (sil, par) in enumerate(zip(resized_sils, resized_pars)):
+                sils_tensor[0, i] = torch.from_numpy(sil).float() / 255.0
+                pars_tensor[0, i] = torch.from_numpy(par).float() / 255.0
+                
+            return (pars_tensor, sils_tensor), seq_len
+
+        elif self.model_type == "SkeletonGaitPP":
             # SkeletonGaitPP requires multimodal input: pose heatmaps (2 channels) + silhouette (1 channel)
-            # IMPORTANT: The original model expects separate pose heatmaps, not generated from silhouette
             try:
-                # Import pose generator
-                import sys
-                import os
-                sys.path.append(os.path.dirname(__file__))
-                from pose_generator import PoseHeatmapGenerator
+                # Import pose generator with correct path
+                from ..processing.pose_generator import PoseHeatmapGenerator
                 pose_generator = PoseHeatmapGenerator(target_size=(64, 44))
                 
                 # Generate pose heatmaps from silhouettes (2 channels)
@@ -386,12 +465,13 @@ class GaitRecognizer:
                 sils_tensor[0, i] = torch.from_numpy(sil).float() / 255.0
             return sils_tensor, seq_len
 
-    def recognize(self, silhouettes):
+    def recognize(self, silhouettes, parsings=None):
         """
         Perform gait recognition using the currently active model
         
         Args:
             silhouettes: List of silhouette arrays
+            parsings: List of parsing arrays (for XGait)
             
         Returns:
             Feature embeddings from the model
@@ -399,35 +479,43 @@ class GaitRecognizer:
         if len(silhouettes) == 0:
             print("No silhouettes provided")
             return None
-            
-        # Preprocess silhouettes
-        sils_tensor, seq_len = self.preprocess_silhouettes(silhouettes)
         
-        # Add debug print to check sils_tensor shape
-        # print(f"Preprocessed silhouettes shape: {sils_tensor.shape}, seq_len: {seq_len}")
+        # Use improved inference for XGait if available
+        if self.model_type == "XGait" and hasattr(self, 'improved_inference') and self.improved_inference is not None:
+            try:
+                return self.improved_inference.enhanced_inference(silhouettes, parsings)
+            except Exception as e:
+                print(f"Enhanced inference failed, falling back to standard: {e}")
+        
+        # Standard preprocessing and inference
+        preprocessed_input, seq_len = self.preprocess_silhouettes(silhouettes, parsings)
         
         # Move to device
-        sils_tensor = sils_tensor.to(self.device)
+        if self.model_type == "XGait":
+            pars_tensor, sils_tensor = preprocessed_input
+            pars_tensor = pars_tensor.to(self.device)
+            sils_tensor = sils_tensor.to(self.device)
+        else:
+            sils_tensor = preprocessed_input.to(self.device)
         
         # Create dummy values for unused inputs
         labs = torch.zeros(1).long().to(self.device)
         typs = torch.zeros(1).long().to(self.device) 
         vies = torch.zeros(1).long().to(self.device)
         
-        # Both models expect seqL as a list of sequence lengths
+        # All models expect seqL as a list of sequence lengths
         seq_tensor = torch.tensor([seq_len], dtype=torch.long).to(self.device)
         seqL = [seq_tensor]
-        
-        # Debug print to verify seqL format
-        # print(f"seqL format: {type(seqL)}, value: {seqL}, element type: {type(seqL[0])}")
         
         # Run inference
         with torch.no_grad():
             try:
-                if self.model_type == "SkeletonGaitPP":
+                if self.model_type == "XGait":
+                    # XGait expects [parsing, silhouette] inputs
+                    inputs = ([pars_tensor, sils_tensor], labs, typs, vies, seqL)
+                elif self.model_type == "SkeletonGaitPP":
                     # SkeletonGaitPP expects multimodal input [pose_heatmaps, silhouettes]
                     # sils_tensor already contains [pose_x, pose_y, silhouette] in 3 channels
-                    # Split into pose heatmaps and silhouettes
                     if sils_tensor.dim() == 5:  # [batch, seq, channels, height, width]
                         pose_heatmaps = sils_tensor[:, :, :2, :, :]  # First 2 channels for pose
                         silhouettes = sils_tensor[:, :, 2:3, :, :]   # Last channel for silhouette
@@ -448,4 +536,117 @@ class GaitRecognizer:
                 print(f"Error during inference with {self.model_type}: {str(e)}")
                 import traceback
                 traceback.print_exc()
+                
+                # If it's XGait with shape error, try alternative format
+                if self.model_type == "XGait" and "shape" in str(e).lower():
+                    try:
+                        print("Attempting with alternative tensor format...")
+                        # Try reshaping the tensors
+                        pars_tensor_reshaped = pars_tensor.unsqueeze(2)  # [1, seq, 1, 64, 44]
+                        sils_tensor_reshaped = sils_tensor.unsqueeze(2)  # [1, seq, 1, 64, 44]
+                        inputs = ([pars_tensor_reshaped, sils_tensor_reshaped], labs, typs, vies, seqL)
+                        
+                        outputs = self.model(inputs)
+                        embeddings = outputs['inference_feat']['embeddings']
+                        print("Alternative tensor format successful!")
+                        return embeddings.cpu().numpy()
+                    except Exception as e2:
+                        print(f"Alternative format also failed: {str(e2)}")
+                
                 return None
+
+    def generate_parsing(self, silhouettes):
+        """
+        Generate parsing maps from silhouettes using state-of-the-art human parsing models
+        
+        Args:
+            silhouettes: List of silhouette arrays (H x W, values 0-255)
+        Returns:
+            parsing_maps: List of parsing maps with semantic body part labels
+        """
+        # Initialize human parsing generator if not already done
+        if not hasattr(self, '_parsing_generator'):
+            try:
+                from ..processing.human_parsing import create_human_parser
+                
+                # Try different models in order of preference
+                models_to_try = ['schp_resnet101', 'lip_hrnet', 'atr_hrnet']
+                
+                for model_name in models_to_try:
+                    try:
+                        print(f"Initializing human parsing model: {model_name}")
+                        self._parsing_generator = create_human_parser(
+                            model_name=model_name, 
+                            device=str(self.device)
+                        )
+                        print(f"Successfully loaded {model_name} for human parsing")
+                        break
+                    except Exception as e:
+                        print(f"Failed to load {model_name}: {e}")
+                        continue
+                else:
+                    # All models failed, use geometric fallback
+                    print("All parsing models failed, using geometric fallback")
+                    self._parsing_generator = None
+                    
+            except ImportError as e:
+                print(f"Failed to import human parsing module: {e}")
+                self._parsing_generator = None
+        
+        # Generate parsing maps
+        if self._parsing_generator is not None:
+            try:
+                parsing_maps = self._parsing_generator.generate_from_silhouettes(silhouettes)
+                print(f"Generated {len(parsing_maps)} parsing maps using advanced model")
+                return parsing_maps
+            except Exception as e:
+                print(f"Human parsing model failed: {e}")
+                # Fall through to geometric fallback
+        
+        # Geometric fallback implementation
+        print("Using geometric fallback for parsing generation")
+        parsing_maps = []
+        for sil in silhouettes:
+            h, w = sil.shape
+            parsing_map = np.zeros_like(sil, dtype=np.uint8)
+            
+            # Find bounding box of the silhouette
+            coords = np.column_stack(np.where(sil > 0))
+            if coords.size == 0:
+                parsing_maps.append(parsing_map)
+                continue
+            
+            y_min, x_min = coords.min(axis=0)
+            y_max, x_max = coords.max(axis=0)
+            height = y_max - y_min + 1
+            
+            # Enhanced geometric parsing with more body parts
+            head_end = y_min + int(0.15 * height)      # Head: top 15%
+            neck_end = y_min + int(0.20 * height)      # Neck: 15-20%
+            torso_end = y_min + int(0.55 * height)     # Torso: 20-55%
+            thigh_end = y_min + int(0.80 * height)     # Thighs: 55-80%
+            # Legs: 80-100%
+            
+            for y in range(y_min, y_max + 1):
+                for x in range(x_min, x_max + 1):
+                    if sil[y, x] > 0:
+                        width_pos = (x - x_min) / max(1, x_max - x_min)
+                        
+                        if y < head_end:
+                            parsing_map[y, x] = 1  # Head
+                        elif y < neck_end:
+                            parsing_map[y, x] = 2  # Neck/Upper torso
+                        elif y < torso_end:
+                            # Torso with arms detection
+                            if width_pos < 0.25 or width_pos > 0.75:
+                                parsing_map[y, x] = 3  # Arms (outer parts)
+                            else:
+                                parsing_map[y, x] = 2  # Torso (center)
+                        elif y < thigh_end:
+                            parsing_map[y, x] = 4  # Thighs/Upper legs
+                        else:
+                            parsing_map[y, x] = 5  # Lower legs/feet
+            
+            parsing_maps.append(parsing_map)
+        
+        return parsing_maps
