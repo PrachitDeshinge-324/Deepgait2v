@@ -9,6 +9,20 @@ import numpy as np
 import cv2
 from typing import List, Tuple, Optional, Dict, Any
 import logging
+import sys
+import os
+from pathlib import Path
+
+# Import scipy for distance transform, with fallback
+try:
+    from scipy.ndimage import distance_transform_edt
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+
+# Add src to path for imports
+sys.path.append(str(Path(__file__).parent.parent))
+from processing.human_parsing import HumanParsingModel
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +47,31 @@ class ImprovedXGaitInference:
         # Parsing enhancement
         self.enhance_parsing = True
         self.min_body_parts = 4
+        
+        # Initialize human parsing model
+        self.human_parser = None
+        self.use_pretrained_parsing = True
+        self._initialize_human_parser()
+        
+    def _initialize_human_parser(self):
+        """Initialize the human parsing model"""
+        try:
+            # Use SCHP model by default as it's optimized for gait analysis
+            self.human_parser = HumanParsingModel(
+                model_name='schp_resnet101', 
+                device=str(self.device)
+            )
+            if self.human_parser.model is not None:
+                logger.info("Human parsing model loaded successfully")
+                self.use_pretrained_parsing = True
+            else:
+                logger.warning("Human parsing model failed to load, using geometric fallback")
+                self.use_pretrained_parsing = False
+        except Exception as e:
+            logger.warning(f"Failed to initialize human parsing model: {e}")
+            logger.info("Using geometric parsing fallback")
+            self.human_parser = None
+            self.use_pretrained_parsing = False
         
     def enhanced_preprocessing(self, silhouettes: List[np.ndarray], 
                              parsings: Optional[List[np.ndarray]] = None) -> Tuple[torch.Tensor, torch.Tensor, int]:
@@ -65,9 +104,14 @@ class ImprovedXGaitInference:
             enhanced_sil = self._enhance_silhouette(sil)
             enhanced_silhouettes.append(enhanced_sil)
         
-        # 3. Generate or enhance parsing maps
+        # 3. Generate or enhance parsing maps using pretrained model
         if filtered_parsings is None:
-            enhanced_parsings = self._generate_enhanced_parsing(enhanced_silhouettes)
+            if self.use_pretrained_parsing and self.human_parser is not None:
+                # Use the pretrained human parsing model
+                enhanced_parsings = self._generate_parsing_with_model(enhanced_silhouettes)
+            else:
+                # Fallback to geometric parsing
+                enhanced_parsings = self._generate_enhanced_parsing(enhanced_silhouettes)
         else:
             enhanced_parsings = []
             for parsing in filtered_parsings:
@@ -252,6 +296,174 @@ class ImprovedXGaitInference:
         
         return enhanced
     
+    def _generate_parsing_with_model(self, silhouettes: List[np.ndarray]) -> List[np.ndarray]:
+        """Generate parsing maps using the pretrained human parsing model"""
+        if self.human_parser is None or self.human_parser.model is None:
+            logger.warning("Human parsing model not available, falling back to geometric parsing")
+            return self._generate_enhanced_parsing(silhouettes)
+        
+        parsing_maps = []
+        
+        for sil in silhouettes:
+            try:
+                # Convert silhouette to RGB format for the parsing model
+                # The parsing model expects RGB input, but we have binary silhouettes
+                # We'll create a pseudo-RGB image where the silhouette forms a person shape
+                
+                # First, create a more realistic person image from silhouette
+                rgb_image = self._silhouette_to_rgb(sil)
+                
+                # Use the human parsing model to generate parsing
+                parsing_result = self.human_parser.parse_human(rgb_image)
+                
+                if parsing_result is not None:
+                    # Convert parsing result to XGait format
+                    xgait_parsing = self._convert_parsing_to_xgait_format(parsing_result, sil)
+                    parsing_maps.append(xgait_parsing)
+                else:
+                    # Fallback to geometric parsing for this frame
+                    geometric_parsing = self._generate_enhanced_parsing([sil])[0]
+                    parsing_maps.append(geometric_parsing)
+                    
+            except Exception as e:
+                logger.warning(f"Parsing model failed for frame, using geometric fallback: {e}")
+                geometric_parsing = self._generate_enhanced_parsing([sil])[0]
+                parsing_maps.append(geometric_parsing)
+        
+        return parsing_maps
+    
+    def _silhouette_to_rgb(self, silhouette: np.ndarray) -> np.ndarray:
+        """Convert binary silhouette to RGB image for parsing model input"""
+        # Create a 3-channel image
+        h, w = silhouette.shape
+        rgb_image = np.zeros((h, w, 3), dtype=np.uint8)
+        
+        # Create a person-like appearance using the silhouette
+        mask = silhouette > 0
+        
+        # Set background to a neutral color
+        rgb_image[:, :] = [128, 128, 128]  # Gray background
+        
+        # Set person area to skin-like color
+        rgb_image[mask] = [180, 150, 120]  # Skin tone
+        
+        # Add some texture/gradient to make it more realistic for the parsing model
+        if np.any(mask):
+            # Find bounding box
+            coords = np.column_stack(np.where(mask))
+            y_min, x_min = coords.min(axis=0)
+            y_max, x_max = coords.max(axis=0)
+            height = y_max - y_min + 1
+            
+            # Add gradual lighting effect
+            for y in range(y_min, y_max + 1):
+                for x in range(x_min, x_max + 1):
+                    if mask[y, x]:
+                        # Add subtle gradient based on position
+                        lighting_factor = 0.8 + 0.4 * (x - x_min) / max(1, x_max - x_min)
+                        rgb_image[y, x] = (rgb_image[y, x] * lighting_factor).astype(np.uint8)
+        
+        return rgb_image
+    
+    def _convert_parsing_to_xgait_format(self, parsing_result: np.ndarray, original_silhouette: np.ndarray) -> np.ndarray:
+        """Convert parsing model output to XGait-compatible format"""
+        # Resize parsing result to match silhouette size
+        h, w = original_silhouette.shape
+        if parsing_result.shape[:2] != (h, w):
+            parsing_resized = cv2.resize(parsing_result, (w, h), interpolation=cv2.INTER_NEAREST)
+        else:
+            parsing_resized = parsing_result.copy()
+        
+        # Create XGait-compatible parsing map with proper labels
+        xgait_parsing = np.zeros_like(original_silhouette, dtype=np.uint8)
+        silhouette_mask = original_silhouette > 0
+        
+        # Map parsing labels to XGait format (matching Gait3D expectations)
+        # XGait typically expects: 0=background, 1-N=body parts
+        
+        if self.human_parser.model_name == 'schp_resnet101':
+            # SCHP labels: {0: 'Background', 1: 'Head', 2: 'Torso', 3: 'Upper-arms', 4: 'Lower-arms', 5: 'Upper-legs', 6: 'Lower-legs'}
+            label_mapping = {
+                0: 0,  # Background
+                1: 1,  # Head
+                2: 2,  # Torso -> Upper body
+                3: 3,  # Upper arms -> Arms
+                4: 3,  # Lower arms -> Arms (combine with upper arms)
+                5: 4,  # Upper legs -> Thighs
+                6: 5   # Lower legs -> Lower legs
+            }
+        else:
+            # For other models (LIP, ATR), create a more detailed mapping
+            # Map to common body parts that XGait can use
+            unique_labels = np.unique(parsing_resized)
+            label_mapping = {}
+            
+            for label in unique_labels:
+                if label == 0:
+                    label_mapping[label] = 0  # Background
+                elif label in [1, 2, 11, 13]:  # Hat, Hair, Face, etc.
+                    label_mapping[label] = 1  # Head
+                elif label in [4, 5, 6, 7, 10]:  # Upper clothes, dress, coat, etc.
+                    label_mapping[label] = 2  # Torso
+                elif label in [14, 15]:  # Arms
+                    label_mapping[label] = 3  # Arms
+                elif label in [9, 12, 13, 16, 17]:  # Pants, legs
+                    label_mapping[label] = 4  # Legs
+                else:
+                    label_mapping[label] = 2  # Default to torso
+        
+        # Apply mapping only within silhouette area
+        for original_label, new_label in label_mapping.items():
+            mask = (parsing_resized == original_label) & silhouette_mask
+            xgait_parsing[mask] = new_label
+        
+        # Ensure all silhouette pixels have some label (no background within silhouette)
+        unlabeled_mask = (xgait_parsing == 0) & silhouette_mask
+        if np.any(unlabeled_mask):
+            # Assign unlabeled pixels to nearest labeled region
+            xgait_parsing = self._fill_unlabeled_regions(xgait_parsing, unlabeled_mask)
+        
+        # Resize to target size
+        final_parsing = cv2.resize(xgait_parsing, (44, 64), interpolation=cv2.INTER_NEAREST)
+        
+        return final_parsing
+    
+    def _fill_unlabeled_regions(self, parsing_map: np.ndarray, unlabeled_mask: np.ndarray) -> np.ndarray:
+        """Fill unlabeled regions with nearest labeled pixels"""
+        result = parsing_map.copy()
+        
+        if not np.any(unlabeled_mask):
+            return result
+        
+        # Get labeled regions
+        labeled_mask = (parsing_map > 0) & (~unlabeled_mask)
+        
+        if not np.any(labeled_mask):
+            # If no labeled regions, assign default label (torso)
+            result[unlabeled_mask] = 2
+            return result
+        
+        # Simple approach: assign to most common neighboring label
+        for y, x in np.column_stack(np.where(unlabeled_mask)):
+            # Check 3x3 neighborhood
+            neighbors = []
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    ny, nx = y + dy, x + dx
+                    if (0 <= ny < parsing_map.shape[0] and 
+                        0 <= nx < parsing_map.shape[1] and 
+                        parsing_map[ny, nx] > 0):
+                        neighbors.append(parsing_map[ny, nx])
+            
+            if neighbors:
+                # Assign most common neighbor label
+                result[y, x] = max(set(neighbors), key=neighbors.count)
+            else:
+                # Default to torso if no neighbors
+                result[y, x] = 2
+        
+        return result
+    
     def enhanced_inference(self, silhouettes: List[np.ndarray], 
                          parsings: Optional[List[np.ndarray]] = None) -> Optional[np.ndarray]:
         """
@@ -419,3 +631,35 @@ class ImprovedXGaitInference:
             cv2.rectangle(sil, (23, 50), (28, 62), 255, -1)  # Right leg
             dummy_silhouettes.append(sil)
         return dummy_silhouettes
+    
+    def validate_preprocessing_consistency(self, probe_silhouettes, gallery_silhouettes):
+        """Validate preprocessing consistency between probe and gallery"""
+        probe_enhanced = [self._enhance_silhouette(sil) for sil in probe_silhouettes]
+        gallery_enhanced = [self._enhance_silhouette(sil) for sil in gallery_silhouettes]
+
+        if len(probe_enhanced) != len(gallery_enhanced):
+            raise ValueError("Probe and gallery sequences have different lengths after preprocessing")
+
+        for p, g in zip(probe_enhanced, gallery_enhanced):
+            if p.shape != g.shape:
+                raise ValueError("Mismatch in silhouette shapes between probe and gallery")
+
+        print("✅ Preprocessing consistency validated")
+
+    def validate_embedding_extraction(self, probe_embeddings, gallery_embeddings):
+        """Validate embedding extraction consistency"""
+        if probe_embeddings.shape != gallery_embeddings.shape:
+            raise ValueError("Probe and gallery embeddings have different shapes")
+
+        if np.isnan(probe_embeddings).any() or np.isnan(gallery_embeddings).any():
+            raise ValueError("NaN values detected in embeddings")
+
+        if np.isinf(probe_embeddings).any() or np.isinf(gallery_embeddings).any():
+            raise ValueError("Infinite values detected in embeddings")
+
+        print("✅ Embedding extraction consistency validated")
+
+    def compare_embeddings(self, probe_embeddings, gallery_embeddings):
+        """Compare probe and gallery embeddings for identity matching"""
+        similarity_scores = np.dot(probe_embeddings, gallery_embeddings.T)
+        return similarity_scores

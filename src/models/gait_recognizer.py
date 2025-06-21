@@ -223,11 +223,24 @@ class GaitRecognizer:
         # Initialize improved inference for XGait
         if model_type == "XGait":
             try:
-                from ..utils.improved_xgait_inference import ImprovedXGaitInference
+                # Try different import methods
+                try:
+                    from ..utils.improved_xgait_inference import ImprovedXGaitInference
+                except ImportError:
+                    # Fallback to absolute import
+                    import sys
+                    from pathlib import Path
+                    sys.path.append(str(Path(__file__).parent.parent))
+                    from utils.improved_xgait_inference import ImprovedXGaitInference
+                
                 self.improved_inference = ImprovedXGaitInference(self, cfg or self._get_default_config())
                 print("✅ Enhanced XGait inference pipeline initialized")
-            except ImportError:
-                print("⚠️ Enhanced XGait inference not available, using standard pipeline")
+            except ImportError as e:
+                print(f"⚠️ Enhanced XGait inference not available: {e}")
+                print("Using standard pipeline")
+                self.improved_inference = None
+            except Exception as e:
+                print(f"⚠️ Failed to initialize enhanced inference: {e}")
                 self.improved_inference = None
         else:
             self.improved_inference = None
